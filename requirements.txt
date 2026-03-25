@@ -1,0 +1,35 @@
+# Python dependencies for Quant Trading Skills
+# This file is for reference when running Python components (Freqtrade integration)
+
+# Core dependencies
+pandas>=2.0.0
+numpy>=1.24.0
+python-dateutil>=2.8.0
+
+# Technical analysis (optional - TA-Lib native is preferred)
+# If TA-Lib fails to install, we use pure JS fallback in Node.js side
+TA-Lib>=0.4.0; platform_system != "Windows" or sys_platform != "win32"
+
+# Freqtrade integration (when executing strategies)
+# freqtrade>=2026.3
+
+# Data handling
+pyarrow>=14.0.0  # For Parquet/Feather format (optional)
+h5py>=3.10.0     # For HDF5 format (optional)
+
+# Optimization
+optuna>=4.0.0    # Hyperparameter optimization
+
+# Database
+SQLAlchemy>=2.0.0
+psycopg2-binary>=2.9.0  # PostgreSQL adapter (optional)
+
+# Utilities
+pydantic>=2.0.0  # Data validation (if needed for Python components)
+jsonschema>=4.20.0
+
+# Note: The main execution environment is Node.js with TypeScript.
+# Python dependencies are only needed when:
+# - Running compiled Python strategies via Freqtrade
+# - Using Python-based backtest engine (future)
+# - Data processing pipelines (future)

@@ -1,0 +1,96 @@
+graph TB
+    subgraph "OpenClaw Skills System"
+        API[API Gateway<br/>REST/JSON-RPC]
+        
+        subgraph "Skill Layer"
+            StrategySkill[Strategy Skill]
+            BacktestSkill[Backtesting Skill]
+            HyperoptSkill[Hyperopt Skill]
+            DataSkill[Data Management Skill]
+            RiskSkill[Risk Management Skill]
+            ExchangeSkill[Exchange Adapter Skill]
+            PersistenceSkill[Persistence Skill]
+            ReportingSkill[Reporting Skill]
+        end
+
+        subgraph "Shared Services"
+            TaskQueue[(Async Task Queue<br/>Redis/Celery)]
+            ConfigManager[Configuration<br/>Manager]
+            MetricsCollector[Metrics<br/>Collector]
+        end
+    end
+
+    subgraph "External Dependencies"
+        subgraph "Data Sources"
+            Exchanges[CCXT Exchanges<br/>Binance, Coinbase, etc.]
+            LocalData[Local Data Storage<br/>CSV/HDF5/Parquet]
+        end
+
+        subgraph "Persistence"
+            SQLite[(SQLite DB)]
+            PostgreSQL[(PostgreSQL)<br/>Optional]
+        end
+
+        subgraph "Notification"
+            Alerts[Alert Channels<br/>Email/Telegram/Webhook]
+        end
+    end
+
+    subgraph "User Interfaces"
+        CLI[CLI Tool]
+        WebUI[Web Dashboard<br/>(Future)]
+    end
+
+    %% Connections
+    API --> TaskQueue
+    API --> ConfigManager
+    API --> MetricsCollector
+
+    API --> StrategySkill
+    API --> BacktestSkill
+    API --> HyperoptSkill
+    API --> DataSkill
+    API --> RiskSkill
+    API --> ExchangeSkill
+    API --> PersistenceSkill
+    API --> ReportingSkill
+
+    StrategySkill --> PersistenceSkill
+    BacktestSkill --> DataSkill
+    BacktestSkill --> StrategySkill
+    BacktestSkill --> PersistenceSkill
+    HyperoptSkill --> BacktestSkill
+    HyperoptSkill --> StrategySkill
+    DataSkill --> ExchangeSkill
+    ExchangeSkill --> Exchanges
+    PersistenceSkill --> SQLite
+    PersistenceSkill --> PostgreSQL
+    RiskSkill --> PersistenceSkill
+    ReportingSkill --> BacktestSkill
+    ReportingSkill --> PersistenceSkill
+
+    BacktestSkill --> TaskQueue
+    HyperoptSkill --> TaskQueue
+    DataSkill --> TaskQueue
+
+    MetricsCollector --> API
+    MetricsCollector --> RiskSkill
+
+    RiskSkill --> Alerts
+
+    CLI --> API
+    WebUI --> API
+
+    style API fill:#2d5af0,color:#fff
+    style StrategySkill fill:#3dd383,color:#000
+    style BacktestSkill fill:#3dd383,color:#000
+    style HyperoptSkill fill:#3dd383,color:#000
+    style DataSkill fill:#3dd383,color:#000
+    style RiskSkill fill:#3dd383,color:#000
+    style ExchangeSkill fill:#3dd383,color:#000
+    style PersistenceSkill fill:#3dd383,color:#000
+    style ReportingSkill fill:#3dd383,color:#000
+    style Exchanges fill:#f0edad,color:#000
+    style TaskQueue fill:#ff9e3f,color:#000
+    style ConfigManager fill:#ff9e3f,color:#000
+    style Alerts fill:#ff6b6b,color:#fff

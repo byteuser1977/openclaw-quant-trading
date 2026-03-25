@@ -1,0 +1,74 @@
+{
+  "name": "openclaw-quant-trading",
+  "version": "0.1.0",
+  "description": "量化交易技能包 - 集成 Freqtrade 与 OpenClaw 生态",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:watch": "tsc -w",
+    "clean": "rm -rf dist",
+    "pre start": "npm run build",
+    "start": "node dist/index.js",
+    "test": "jest --coverage",
+    "test:watch": "jest --watch",
+    "test:cov": "jest --coverage --coverageReporters=text-lcov | coveralls",
+    "lint": "eslint src/**/*.ts",
+    "lint:fix": "eslint src/**/*.ts --fix",
+    "dev": "ts-node src/index.ts",
+    "ci": "npm run lint && npm run build && npm test"
+  },
+  "keywords": [
+    "openclaw",
+    "quant",
+    "trading",
+    "freqtrade",
+    "cryptocurrency",
+    "backtesting",
+    "strategy"
+  ],
+  "author": "quant-skill-developer",
+  "license": "MIT",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "winston": "^3.11.0",
+    "dotenv": "^16.3.1",
+    "js-yaml": "^4.1.0",
+    "ajv": "^8.17.1",
+    "ccxt": "^4.3.14"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.3",
+    "ts-node": "^10.9.2",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "eslint": "^8.54.0",
+    "jest": "^29.7.0",
+    "@types/jest": "^29.5.11",
+    "ts-jest": "^29.1.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/better-sqlite3": "^7.6.8",
+    "coveralls": "^3.1.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openclaw-quant-trading.git"
+  },
+  "bugs": {
+    "url": "https://github.com/openclaw-quant-trading/issues"
+  },
+  "homepage": "https://github.com/openclaw-quant-trading#readme"
+}
