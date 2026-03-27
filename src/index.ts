@@ -21,6 +21,11 @@ export * from './core/allowlist';
 // Strategy skill (to be implemented)
 export * from './skills/strategy';
 
+// New modules
+export * from './skills/data';
+export * from './skills/risk';
+export * from './skills/exchange/adapter';
+
 // Utils (to be implemented)
 // export * from './utils/retry';
 // export * from './utils/validation';
