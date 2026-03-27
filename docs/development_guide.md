@@ -75,15 +75,65 @@
 ## 📦 代码结构
 ```
 src/
-  core/        # Vault, Allowlist, Logger, Config, Errors
+  core/        # Vault, Allowlist, Logger, Config, Errors, Worker
   skills/
     strategy/   # Strategy 编译、参数空间、回测
     backtesting/ # Backtest 执行与结果处理
     hyperopt/   # 参数优化
     data/       # DataManager (ccxt + 验证)
     risk/       # RiskManager (仓位、止损、熔断)
+    risk/integration.ts  # RiskIntegration (策略集成层)
     exchange/   # ExchangeAdapter (Vault + Allowlist)
+    persistence # PersistenceManager (飞书 Bitable 集成)
+    reporting/  # ReportingManager (报告生成、统计)
 ```
+
+---
+
+## 💾 数据持久化 (`src/skills/persistence/index.ts`)
+
+### 功能概览
+- **飞书多维表格集成**：将交易数据写入协作表格
+- **三张表映射**：
+  - `tblFgMYmwl1mvRt8` (交易记录)
+  - `tblQ0zgTAM5Gx93z` (绩效指标)
+  - `tblBGFCTgZ16sIbB` (警报历史)
+- **批量操作**：支持批量创建交易记录和风险告警
+- **查询**：支持分页和简单筛选
+
+### 关键类
+- `PersistenceManager`
+  - `saveTrade(record)` / `batchSaveTrades(records)`
+  - `savePerformance(metric)`
+  - `saveAlert(alert)` / `batchSaveAlerts(alerts)`
+  - `listTrades(options)` 查询交易
+
+---
+
+## 📊 报告生成 (`src/skills/reporting/index.ts`)
+
+### 功能概览
+- **统计计算**：基于交易数据计算胜率、盈亏比、夏普比率、最大回撤等
+- **多格式输出**：Markdown（用于飞书文档）、CSV（用于 Excel 分析）
+- **持久化集成**：自动从 `PersistenceManager` 加载交易数据
+- **可定制**：可配置是否包含交易明细表、限制条数
+
+### 关键类
+- `ReportingManager`
+  - `calculateStats(trades)` → `TradeStats`
+  - `generateMarkdownReport(trades, options)`
+  - `generateCSV(trades)`
+  - `generateReportFromDatabase(options)` 便捷方法
+
+---
+
+## 🧪 单元测试
+- `tests/unit/core/vault.test.ts`、`allowlist.test.ts`
+- `tests/unit/core/data_manager.test.ts` (新增)
+- `tests/unit/core/worker.test.ts` (待补充)
+- `tests/unit/skills/risk/*.test.ts` (待补充)
+
+> 注意: 当前 Jest 配置与 `tsconfig` 存在冲突，后续将统一 `moduleNameMapper` 解决路径问题。
 
 ---
 
