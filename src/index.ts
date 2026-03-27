@@ -17,6 +17,7 @@ export * from './core/logger';
 export * from './core/errors';
 export * from './core/vault';
 export * from './core/allowlist';
+export * from './core/worker';
 
 // Strategy skill (to be implemented)
 export * from './skills/strategy';
