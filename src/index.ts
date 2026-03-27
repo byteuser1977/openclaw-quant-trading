@@ -15,6 +15,8 @@ export const VERSION = '0.1.0';
 export * from './core/config';
 export * from './core/logger';
 export * from './core/errors';
+export * from './core/vault';
+export * from './core/allowlist';
 
 // Strategy skill (to be implemented)
 export * from './skills/strategy';
