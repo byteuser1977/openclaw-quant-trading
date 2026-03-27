@@ -29,6 +29,8 @@ export * from './skills/risk/integration';
 export * from './skills/exchange/adapter';
 export * from './skills/persistence';
 export * from './skills/reporting';
+export * from './skills/backtesting';
+export * from './skills/hyperopt';
 
 // Utils (to be implemented)
 // export * from './utils/retry';
