@@ -24,6 +24,7 @@ export * from './skills/strategy';
 // New modules
 export * from './skills/data';
 export * from './skills/risk';
+export * from './skills/risk/integration';
 export * from './skills/exchange/adapter';
 
 // Utils (to be implemented)
