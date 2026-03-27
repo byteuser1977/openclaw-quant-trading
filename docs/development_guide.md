@@ -128,12 +128,71 @@ src/
 ---
 
 ## 🧪 单元测试
-- `tests/unit/core/vault.test.ts`、`allowlist.test.ts`
-- `tests/unit/core/data_manager.test.ts` (新增)
-- `tests/unit/core/worker.test.ts` (待补充)
-- `tests/unit/skills/risk/*.test.ts` (待补充)
 
-> 注意: 当前 Jest 配置与 `tsconfig` 存在冲突，后续将统一 `moduleNameMapper` 解决路径问题。
+### 测试结构
+
+```
+tests/
+  unit/
+    core/           # Vault, Allowlist, Logger, Config, Errors, Worker
+    skills/
+      data/         # DataManager
+      risk/         # RiskManager
+      backtesting/  # BacktestEngine
+      hyperopt/     # HyperoptEngine
+      persistence/  # PersistenceManager (mocking needed)
+      reporting/    # ReportingManager (mocking needed)
+```
+
+### 现有测试文件
+
+| 模块 | 测试文件 | 状态 |
+|------|---------|------|
+| Vault | `tests/unit/core/vault.test.ts` | ✅ 12+ 用例 |
+| Allowlist | `tests/unit/core/allowlist.test.ts` | ✅ 18+ 用例 |
+| DataManager | `tests/unit/skills/data_manager.test.ts` | ✅ 数据验证/清洗/缺口填充 |
+| RiskManager | `tests/unit/skills/risk_manager.test.ts` | ✅ 仓位计算、止损、熔断 |
+| Backtesting | `tests/unit/skills/backtesting.test.ts` | ✅ 引擎基础功能 |
+| Hyperopt | `tests/unit/skills/hyperopt.test.ts` | ✅ 采样、评分、早停逻辑 |
+
+### 运行测试
+
+```bash
+# 运行所有测试
+npm test
+
+# 运行特定模块
+npm test -- --testPathPattern=vault
+
+# 生成覆盖率报告
+npm run test:coverage
+```
+
+### Mock 策略
+
+Backtesting 和 Hyperopt 需要提供策略函数 (`StrategyFunction`) 作为参数。在单元测试中，使用简单的模拟策略验证核心逻辑：
+
+```typescript
+const mockStrategy: StrategyFunction = async (ctx) => {
+  if (ctx.pastData.length < 2) return null;
+  const last = ctx.pastData[ctx.pastData.length - 1];
+  const prev = ctx.pastData[ctx.pastData.length - 2];
+  if (last.close > prev.close && ctx.state.position === 0) {
+    return { symbol: 'BTC/USDT', side: 'BUY', price: last.close };
+  }
+  return null;
+};
+```
+
+---
+
+## 📊 测试覆盖率目标
+
+- **核心模块 (Core)**: > 85%
+- **技能模块 (Skills)**: > 80%
+- **集成测试**: 关键路径 100%
+
+> ⚠️ **当前问题**: Jest 配置与 `tsconfig.json` 的 `paths` 映射 (`@/*`) 可能存在冲突，部分测试在 CI 环境可能失败。正在统一配置中。
 
 ---
 
