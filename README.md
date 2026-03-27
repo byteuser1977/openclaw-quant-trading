@@ -58,7 +58,7 @@ quant-skill-developer/
 ## 🔗 相关资源
 
 - **Freqtrade 研究报告**: https://www.feishu.cn/wiki/KDybwyWVtiBPRhkOJ63czJsPnWc
-- **团队协作技能指南**: https://www.feishu.cn/wiki/SEfmwKh0Eias6mkKxNZcww7UnHb
+- **团队协作技能指南**: https://ncnm51noy8kt.feishu.cn/wiki/UzZswJlSzinKEtkIqQkcaGu8nte
 - **本地知识库**: `/Volumes/DATA/data/clawd/data/knowledge/`
 
 ---
