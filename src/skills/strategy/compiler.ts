@@ -24,24 +24,36 @@ export interface StrategyTemplate {
   className?: string;
   timeframe: string;
   indicators: IndicatorConfig[];
-  entryConditions: Condition[];
-  exitConditions: Condition[];
+  entryConditions: (Condition | ConditionNode)[];
+  exitConditions: (Condition | ConditionNode)[];
   parameters: Record<string, any>;
   GeminiTags?: string[]; // For hyperopt grouping
   version?: string;
   author?: string;
 }
 
+export type LogicOperator = 'AND' | 'OR';
+
 export interface Condition {
-  left: string; // Column name or indicator output
+  left: string;
   operator: '<' | '<=' | '>' | '>=' | '==' | '!=';
   right: number | string;
   rightIsColumn?: boolean;
-  logic?: 'AND' | 'OR'; // Default AND
+  logic?: LogicOperator; // Default AND
+}
+
+/**
+ * 条件组合节点（支持嵌套逻辑）
+ */
+export interface ConditionNode {
+  type: 'condition' | 'group';
+  logic?: LogicOperator; // Only for group
+  condition?: Condition;
+  children?: ConditionNode[];
 }
 
 export class StrategyCompiler {
-  private logger: winston.Logger;
+  private logger: Logger;
 
   constructor() {
     this.logger = Logger.getLogger('compiler');
@@ -67,116 +79,172 @@ export class StrategyCompiler {
   }
 
   private generatePythonCode(template: StrategyTemplate, className: string): string {
+    const imports = this.generateImports(template).join('\n');
     const paramLines = this.generateParameterLines(template.parameters);
+    const startupCandles = this.calculateStartupCandles(template.indicators);
     const indicatorLines = this.generateIndicatorLines(template.indicators);
     const entryLines = this.generateConditionLines(template.entryConditions, 'entry');
     const exitLines = this.generateConditionLines(template.exitConditions, 'exit');
+    const hyperoptSpace = this.generateHyperoptSpace(template);
 
-    return `#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Auto-generated strategy by OpenClaw Quant Skills.
+    const lines: string[] = [];
 
-Strategy: ${template.name}
-${template.description ? `Description: ${template.description}` : ''}
-Timeframe: ${template.timeframe}
-${template.author ? `Author: ${template.author}` : ''}${template.version ? `
-Version: ${template.version}` : ''}
-"""
+    // Shebang and imports
+    lines.push(`#!/usr/bin/env python3`);
+    lines.push(`# -*- coding: utf-8 -*-`);
+    lines.push(`"""`);
+    lines.push(`Auto-generated strategy by OpenClaw Quant Skills.`);
+    lines.push(``);
+    lines.push(`Strategy: ${template.name}`);
+    if (template.description) lines.push(`Description: ${template.description}`);
+    lines.push(`Timeframe: ${template.timeframe}`);
+    if (template.author) lines.push(`Author: ${template.author}`);
+    if (template.version) lines.push(`Version: ${template.version}`);
+    lines.push(`"""`);
+    lines.push(``);
+    lines.push(imports);
+    lines.push(``);
 
-from datetime import datetime
-from typing import Dict, Tuple
-import pandas as pd
-import talib.abstract as ta
-import freqtrade.vendor.qtpylib.indicators as qtpylib
-from freqtrade.strategy import IStrategy, informative
-from freqtrade.strategy.interface import SellType
-from pandas import DataFrame
+    // Class definition
+    lines.push(`class ${className}(IStrategy):`);
+    lines.push(`    """${template.description || 'Auto-generated strategy'}"""`);
+    lines.push(``);
+    lines.push(`    # Interface version`);
+    lines.push(`    INTERFACE_VERSION = 3`);
+    lines.push(``);
+    lines.push(`    # Timeframe`);
+    lines.push(`    timeframe = "${template.timeframe}"`);
+    lines.push(``);
+    lines.push(`    # Startup candle count (ensure indicators have enough data)`);
+    lines.push(`    startup_candle_count = ${startupCandles}`);
+    lines.push(``);
 
-
-class ${className}(IStrategy):
-    """
-    ${template.description || 'Auto-generated strategy'}
-    """
-
-    # Strategy configuration
-    INTERFACE_VERSION = 3
-
-    # Timeframe
-    timeframe = "${template.timeframe}"
-
-    # Startup candle count (ensure indicators have enough data)
-    startup_candle_count: int = ${this.calculateStartupCandles(template.indicators)}
-
-    # Parameter space for hyperopt
-    ${paramLines}
-
-    # ROI table (simplified - can be overridden)
-    minimal_roi = {
-        "60": 0.01,
-        "30": 0.02,
-        "0": 0.04
+    // Parameters
+    if (paramLines) {
+      lines.push(`    # Strategy parameters`);
+      paramLines.split('\n').forEach(l => lines.push(`    ${l}`));
+      lines.push(``);
     }
 
-    # Stop loss
-    stoploss = ${template.parameters.stoploss ?? -0.1}
+    // ROI table
+    lines.push(`    # ROI table`);
+    lines.push(`    minimal_roi = {`);
+    lines.push(`        "60": 0.01,`);
+    lines.push(`        "30": 0.02,`);
+    lines.push(`        "0": 0.04`);
+    lines.push(`    }`);
+    lines.push(``);
 
-    # Trailing stop
-    trailing_stop = ${template.parameters.trailing_stop ? 'True' : 'False'}
-    ${template.parameters.trailing_stop ? `
-    trailing_stop_positive = ${template.parameters.trailing_stop_positive ?? 0.02}
-    trailing_stop_positive_offset = ${template.parameters.trailing_stop_positive_offset ?? 0.04}
-    ` : ''}
+    // Stoploss & trailing
+    const stoplossVal = (template.parameters && template.parameters.stoploss) !== undefined ? template.parameters.stoploss : -0.1;
+    lines.push(`    # Stop loss`);
+    lines.push(`    stoploss = ${stoplossVal}`);
+    lines.push(``);
 
-    # Process only new candles
-    process_only_new_candles = True
-
-    # Order types
-    order_types = {
-        "entry": "limit",
-        "exit": "limit",
-        "stoploss": "market",
-        "stoploss_on_exchange": True,
+    if (template.parameters && template.parameters.trailing_stop) {
+      lines.push(`    # Trailing stop`);
+      lines.push(`    trailing_stop = True`);
+      lines.push(`    trailing_stop_positive = ${template.parameters.trailing_stop_positive ?? 0.02}`);
+      lines.push(`    trailing_stop_positive_offset = ${template.parameters.trailing_stop_positive_offset ?? 0.04}`);
+      lines.push(``);
+    } else {
+      lines.push(`    # Trailing stop`);
+      lines.push(`    trailing_stop = False`);
+      lines.push(``);
     }
 
-    def populate_indicators(self, dataframe: DataFrame, metadata: Dict) -> DataFrame:
-        """
-        Add technical indicators to the dataframe.
-        """
-        ${indicatorLines}
+    lines.push(`    # Process only new candles`);
+    lines.push(`    process_only_new_candles = True`);
+    lines.push(``);
+    lines.push(`    # Order types`);
+    lines.push(`    order_types = {`);
+    lines.push(`        "entry": "limit",`);
+    lines.push(`        "exit": "limit",`);
+    lines.push(`        "stoploss": "market",`);
+    lines.push(`        "stoploss_on_exchange": True,`);
+    lines.push(`    }`);
+    lines.push(``);
 
-        return dataframe
+    // populate_indicators
+    lines.push(`    def populate_indicators(self, dataframe: DataFrame, metadata: Dict) -> DataFrame:`);
+    lines.push(`        """Add technical indicators to the dataframe."""`);
+    if (indicatorLines) {
+      indicatorLines.split('\n').forEach(l => lines.push(`        ${l}`));
+    } else {
+      lines.push(`        # No indicators defined`);
+    }
+    lines.push(`        return dataframe`);
+    lines.push(``);
 
-    def populate_entry_trend(self, dataframe: DataFrame, metadata: Dict) -> DataFrame:
-        """
-        Based on TA indicators, populates the entry signal for the given dataframe
-        """
-        ${entryLines}
+    // populate_entry_trend
+    lines.push(`    def populate_entry_trend(self, dataframe: DataFrame, metadata: Dict) -> DataFrame:`);
+    lines.push(`        """Based on TA indicators, populate the entry signal."""`);
+    entryLines.split('\n').forEach(l => lines.push(`        ${l}`));
+    lines.push(`        return dataframe`);
+    lines.push(``);
 
-        return dataframe
+    // populate_exit_trend
+    lines.push(`    def populate_exit_trend(self, dataframe: DataFrame, metadata: Dict) -> DataFrame:`);
+    lines.push(`        """Based on TA indicators, populate the exit signal."""`);
+    exitLines.split('\n').forEach(l => lines.push(`        ${l}`));
+    lines.push(`        return dataframe`);
+    lines.push(``);
 
-    def populate_exit_trend(self, dataframe: DataFrame, metadata: Dict) -> DataFrame:
-        """
-        Based on TA indicators, populates the exit signal for the given dataframe
-        """
-        ${exitLines}
+    // informative_pairs
+    lines.push(`    def informative_pairs(self) -> List[Tuple[str, str]]:`);
+    lines.push(`        """Define additional informative pairs for strategy."""`);
+    lines.push(`        return []`);
+    lines.push(``);
 
-        return dataframe
+    // custom_stoploss
+    lines.push(`    def custom_stoploss(self, pair: str, trade: 'Trade', current_time: datetime, current_rate: float, current_profit: float, **kwargs) -> float:`);
+    lines.push(`        # Custom stoploss logic can be added here`);
+    lines.push(`        return self.stoploss`);
+    lines.push(``);
 
-    def informative_pairs(self) -> List[Tuple[str, str, str]]:
-        """
-        Define additional informative pairs for strategy
-        """
-        return []
+    // custom_entry
+    lines.push(`    def custom_entry(self, pair: str, current_time: datetime, current_rate: float, **kwargs) -> Tuple[bool, str]:`);
+    lines.push(`        # Custom entry signal can be added here`);
+    lines.push(`        return False, ''`);
+    lines.push(``);
 
-    # Optional: Custom stoploss calculation
-    # def custom_stoploss(self, pair: str, trade: 'Trade', current_time: datetime, current_rate: float, proposed_stoploss: float, **kwargs) -> float:
-    #     return proposed_stoploss
+    // custom_exit
+    lines.push(`    def custom_exit(self, pair: str, trade: 'Trade', current_time: datetime, current_rate: float, **kwargs) -> Optional[Tuple[bool, str]]:`);
+    lines.push(`        # Custom exit signal can be added here`);
+    lines.push(`        return None`);
+    lines.push(``);
 
-    # Optional: Custom sell signal
-    # def custom_sell(self, pair: str, trade: 'Trade', current_time: datetime, current_rate: float, current_profit: float, **kwargs) -> Optional[Tuple[str, str]]:
-    #     return None
-`;
+    // Hyperopt parameters if any
+    if (hyperoptSpace) {
+      lines.push(`    @staticmethod`);
+      lines.push(`    def hyperopt_parameters():`);
+      lines.push(`        return {`);
+      const paramEntries = Object.entries(template.parameters).filter(([_, def]) => {
+        return def && typeof def === 'object' && 'hyperopt' in (def as any);
+      });
+      for (const [name, def] of paramEntries) {
+        const h = (def as any).hyperopt;
+        if (h.type === 'int') {
+          lines.push(`            '${name}': Integer(${h.min}, ${h.max}),`);
+        } else if (h.type === 'float') {
+          lines.push(`            '${name}': Discrete(${h.min}, ${h.max}, step=${h.step || 0.1}),`);
+        } else if (h.type === 'discrete') {
+          const values = h.choices.map((c: any) => JSON.stringify(c)).join(', ');
+          lines.push(`            '${name}': Categorical([${values}]),`);
+        }
+      }
+      lines.push(`        }`);
+      lines.push(``);
+    }
+
+    // Populate hyperopt params (legacy) if any
+    const populateHyperopt = this.generatePopulateHyperoptParams(template);
+    if (populateHyperopt) {
+      lines.push(populateHyperopt.split('\n').map(l => `    ${l}`).join('\n'));
+      lines.push(``);
+    }
+
+    return lines.join('\n');
   }
 
   private generateParameterLines(params: Record<string, any>): string {
@@ -215,7 +283,6 @@ class ${className}(IStrategy):
     const lines: string[] = [];
     for (const indicator of indicators) {
       const params = this.formatIndicatorParams(indicator);
-      const inputCol = indicator.input;
       const output = indicator.output;
 
       switch (indicator.function.toUpperCase()) {
@@ -237,7 +304,25 @@ class ${className}(IStrategy):
           break;
         case 'BBANDS':
           lines.push(`        bbands = ta.BBANDS(dataframe, timeperiod=${params.timeperiod}, nbdevup=${params.nbdevup}, nbdevdn=${params.nbdevdn})`);
-          lines.push(`        dataframe['${output}'] = bbands['middleband']`);
+          lines.push(`        dataframe['${output}_lower'] = bbands['lowerband']`);
+          lines.push(`        dataframe['${output}_upper'] = bbands['upperband']`);
+          break;
+        case 'VWAP':
+          lines.push(`        dataframe['${output}'] = (dataframe['volume'] * (dataframe['high'] + dataframe['low'] + dataframe['close']) / 3).cumsum() / dataframe['volume'].cumsum()`);
+          break;
+        case 'OBV':
+          lines.push(`        dataframe['${output}'] = ta.OBV(dataframe)`);
+          break;
+        case 'STOCH':
+          lines.push(`        stoch = ta.STOCH(dataframe, fastk_period=${params.timeperiod}, slowk_period=${params.slowk_period || 3}, slowd_period=${params.slowd_period || 3}, slowk_matype=0, slowd_matype=0)`);
+          lines.push(`        dataframe['${output}_k'] = stoch['slowk']`);
+          lines.push(`        dataframe['${output}_d'] = stoch['slowd']`);
+          break;
+        case 'ADX':
+          lines.push(`        dataframe['${output}'] = ta.ADX(dataframe, timeperiod=${params.timeperiod})`);
+          break;
+        case 'CCI':
+          lines.push(`        dataframe['${output}'] = ta.CCI(dataframe, timeperiod=${params.timeperiod})`);
           break;
         default:
           this.logger.warn(`Unknown indicator: ${indicator.function}, skipping`);
@@ -246,23 +331,55 @@ class ${className}(IStrategy):
     return lines.join('\n');
   }
 
-  private generateConditionLines(conditions: Condition[], type: 'entry' | 'exit'): string {
+  /**
+   * 生成条件表达式 (支持 Condition 数组或 ConditionNode 树)
+   */
+  private generateConditionLines(conditions: (Condition | ConditionNode)[], type: 'entry' | 'exit'): string {
     if (conditions.length === 0) {
       return `        dataframe.loc[:, '${type}_long'] = 0`;
     }
 
-    // Build condition string
-    const conditionStr = conditions.map((cond, idx) => {
-      const left = `dataframe['${cond.left}']`;
-      const right = cond.rightIsColumn ? `dataframe['${cond.right}']` : cond.right;
-      const op = cond.operator;
-      const condition = `${left} ${op} ${right}`;
-      return condition;
-    }).join(` ${conditions[0].logic || 'AND'} `);
+    // 将数组转换为统一的条件树
+    const rootNode: ConditionNode = conditions.length === 1 && (conditions[0] as ConditionNode).type === 'group'
+      ? (conditions[0] as ConditionNode)
+      : {
+          type: 'group',
+          logic: 'AND',
+          children: conditions.map(cond => 
+            (cond as ConditionNode).type === 'condition' || !(cond as ConditionNode).type
+              ? { type: 'condition', condition: cond as Condition }
+              : cond as ConditionNode
+          )
+        };
 
-    // Freqtrade uses dataframe.loc with boolean mask
+    const conditionStr = this.generateConditionTree(rootNode);
     const action = type === 'entry' ? 'enter_long' : 'exit_long';
     return `        dataframe.loc[${conditionStr}, '${action}'] = 1`;
+  }
+
+  /**
+   * 递归生成条件树表达式
+   */
+  private generateConditionTree(node: ConditionNode): string {
+    if (node.type === 'condition' && node.condition) {
+      const cond = node.condition;
+      const left = `dataframe['${cond.left}']`;
+      const right = cond.rightIsColumn ? `dataframe['${cond.right}']` : cond.right;
+      return `${left} ${cond.operator} ${right}`;
+    }
+
+    if (node.type === 'group' && node.children) {
+      const operator = node.logic || 'AND';
+      const childExprs = node.children.map(child => this.generateConditionTree(child));
+      // Add parentheses around each child except when it's already a single condition
+      const wrapped = childExprs.map(expr => {
+        // If expression already contains spaces (likely a binary op), wrap in parens
+        return `(${expr})`;
+      });
+      return wrapped.join(` ${operator} `);
+    }
+
+    return 'True'; // Fallback
   }
 
   private calculateStartupCandles(indicators: IndicatorConfig[]): number {
@@ -316,10 +433,72 @@ class ${className}(IStrategy):
     return JSON.stringify(value);
   }
 
+  /**
+   * 生成 Hyperopt 参数空间定义 (可选)
+   */
+  private generateHyperoptSpace(template: StrategyTemplate): string | null {
+    const paramEntries = Object.entries(template.parameters).filter(([_, def]) => {
+      return def && typeof def === 'object' && 'hyperopt' in (def as any);
+    });
+
+    if (paramEntries.length === 0) {
+      return null;
+    }
+
+    const lines: string[] = [];
+    lines.push(`    @staticmethod`);
+    lines.push(`    def hyperopt_params():`);
+    lines.push(`        return {`);
+
+    for (const [name, def] of paramEntries) {
+      const h = (def as any).hyperopt;
+      const defaultVal = (def as any).default !== undefined ? this.toPythonValue((def as any).default) : 'None';
+      switch (h.type) {
+        case 'int':
+          lines.push(`            '${name}': {'type': 'integer', 'min': ${h.min}, 'max': ${h.max}, 'step': ${h.step || 1}, 'default': ${defaultVal}},`);
+          break;
+        case 'float':
+          lines.push(`            '${name}': {'type': 'float', 'min': ${h.min}, 'max': ${h.max}, 'step': ${h.step || 0.1}, 'default': ${defaultVal}},`);
+          break;
+        case 'discrete':
+          const choices = h.choices.map((c: any) => this.toPythonValue(c)).join(', ');
+          lines.push(`            '${name}': {'type': 'discrete', 'values': [${choices}], 'default': ${defaultVal}},`);
+          break;
+      }
+    }
+
+    lines.push(`        }`);
+    return lines.join('\n');
+  }
+
+  /**
+   * 生成 populate_hyperopt_params 方法 (旧版 hyperopt 接口)
+   */
+  private generatePopulateHyperoptParams(template: StrategyTemplate): string | null {
+    const paramEntries = Object.entries(template.parameters).filter(([_, def]) => {
+      return def && typeof def === 'object' && 'hyperopt' in (def as any);
+    });
+
+    if (paramEntries.length === 0) {
+      return null;
+    }
+
+    const lines: string[] = [];
+    lines.push(`    @staticmethod`);
+    lines.push(`    def populate_hyperopt_params():`);
+    lines.push(`        return {`);
+    for (const [name, def] of paramEntries) {
+      const defaultVal = (def as any).default !== undefined ? this.toPythonValue((def as any).default) : 'None';
+      lines.push(`            '${name}': ${defaultVal},`);
+    }
+    lines.push(`        }`);
+    return lines.join('\n');
+  }
+
   private generateImports(template: StrategyTemplate): string[] {
     const imports = [
       'from datetime import datetime',
-      'from typing import Dict, Tuple',
+      'from typing import Dict, Tuple, List, Optional',
       'import pandas as pd',
       'import talib.abstract as ta',
       'import freqtrade.vendor.qtpylib.indicators as qtpylib',
@@ -327,7 +506,13 @@ class ${className}(IStrategy):
       'from freqtrade.strategy.interface import SellType',
       'from pandas import DataFrame',
     ];
-    // Add custom imports if needed
+    // Add hyperopt import if needed
+    const hasHyperopt = Object.values(template.parameters).some(def => 
+      def && typeof def === 'object' && 'hyperopt' in (def as any)
+    );
+    if (hasHyperopt) {
+      imports.push('from freqtrade.optimize.space import Integer, Discrete, Categorical');
+    }
     return imports;
   }
 }

@@ -1,0 +1,200 @@
+/**
+ * RSI + MACD Combination Strategy
+ *
+ * Combines RSI mean reversion with MACD trend confirmation.
+ * Entry: RSI oversold + MACD bullish cross → Long
+ * Entry: RSI overbought + MACD bearish cross → Short (if supported)
+ * Exit: Opposite signal or RSI reaching extreme opposite
+ *
+ * Best for: Volatile markets with clear trends
+ * Risk: Medium-High. Requires both indicators to align.
+ */
+
+import { StrategyTemplate, IndicatorConfig, Condition, ConditionNode } from '../compiler';
+import { ParameterSpaceBuilder, IntParameter, DecimalParameter, BooleanParameter, CategoricalParameter } from '../parameters';
+
+export interface RsiMacdParams {
+  rsi_period: number;
+  rsi_oversold: number;
+  rsi_overbought: number;
+  macd_fast: number;
+  macd_slow: number;
+  macd_signal: number;
+  stoploss: number;
+  use_short?: boolean;
+}
+
+/**
+ * Default parameters
+ */
+export function getDefaultParams(): RsiMacdParams {
+  return {
+    rsi_period: 14,
+    rsi_oversold: 30,
+    rsi_overbought: 70,
+    macd_fast: 12,
+    macd_slow: 26,
+    macd_signal: 9,
+    stoploss: -0.15,
+    use_short: true,
+  };
+}
+
+/**
+ * Parameter space for Hyperopt
+ */
+export function getParameterSpace() {
+  return new ParameterSpaceBuilder()
+    .addInt('rsi_period', 7, 21, 14, 'RSI period')
+    .addInt('rsi_oversold', 20, 40, 30, 'RSI oversold threshold')
+    .addInt('rsi_overbought', 60, 80, 70, 'RSI overbought threshold')
+    .addInt('macd_fast', 8, 20, 12, 'MACD fast period')
+    .addInt('macd_slow', 20, 40, 26, 'MACD slow period')
+    .addInt('macd_signal', 5, 15, 9, 'MACD signal period')
+    .addDecimal('stoploss', -0.25, -0.05, -0.15, 0.01, 'Stop loss')
+    .addBoolean('use_short', true, 'Allow short positions')
+    .build();
+}
+
+/**
+ * Create RSI+MACD strategy template
+ */
+export function createRsiMacdStrategy(
+  name: string = 'RSI MACD',
+  timeframe: string = '1h',
+  customParams?: Partial<RsiMacdParams>
+): StrategyTemplate {
+  const params = { ...getDefaultParams(), ...customParams };
+
+  // Build condition tree for entry (RSI + MACD confirmation)
+  const buildEntryConditions = (): (Condition | ConditionNode)[] => {
+    const conditions: (Condition | ConditionNode)[] = [];
+
+    // LONG entry: RSI oversold AND MACD bullish cross
+    const longGroup: ConditionNode = {
+      type: 'group',
+      logic: 'AND',
+      children: [
+        {
+          type: 'condition',
+          condition: {
+            left: 'rsi',
+            operator: '<',
+            right: params.rsi_oversold,
+          },
+        },
+        {
+          type: 'condition',
+          condition: {
+            left: 'macd_line',
+            operator: '>',
+            right: 'signal_line',
+            rightIsColumn: true,
+          },
+        },
+      ],
+    };
+    conditions.push(longGroup);
+
+    // SHORT entry (if enabled): RSI overbought AND MACD bearish cross
+    if (params.use_short) {
+      const shortGroup: ConditionNode = {
+        type: 'group',
+        logic: 'AND',
+        children: [
+          {
+            type: 'condition',
+            condition: {
+              left: 'rsi',
+              operator: '>',
+              right: params.rsi_overbought,
+            },
+          },
+          {
+            type: 'condition',
+            condition: {
+              left: 'macd_line',
+              operator: '<',
+              right: 'signal_line',
+              rightIsColumn: true,
+            },
+          },
+        ],
+      };
+      conditions.push(shortGroup);
+    }
+
+    return conditions;
+  };
+
+  // Exit conditions
+  const buildExitConditions = (): Condition[] => {
+    const conditions: Condition[] = [];
+
+    // Exit long: RSI becomes overbought
+    conditions.push({
+      left: 'rsi',
+      operator: '>',
+      right: params.rsi_overbought,
+      logic: 'OR',
+    });
+
+    // Exit short (if enabled): RSI becomes oversold
+    if (params.use_short) {
+      conditions.push({
+        left: 'rsi',
+        operator: '<',
+        right: params.rsi_oversold,
+        logic: 'AND', // Last condition logic doesn't matter much
+      });
+    }
+
+    return conditions;
+  };
+
+  return {
+    name,
+    description: 'Combines RSI mean reversion with MACD trend. Long when RSI oversold + MACD bullish cross. ' +
+                 `Short signals ${params.use_short ? 'enabled' : 'disabled'}.`,
+    className: 'RsiMacdStrategy',
+    timeframe,
+    GeminiTags: ['mean-reversion', 'momentum', 'combo'],
+    version: '1.0.0',
+    author: 'OpenClaw Quant',
+    indicators: [
+      {
+        name: 'rsi',
+        function: 'RSI',
+        params: { timeperiod: params.rsi_period },
+        input: 'close',
+        output: 'rsi',
+      },
+      {
+        name: 'macd',
+        function: 'MACD',
+        params: {
+          fastperiod: params.macd_fast,
+          slowperiod: params.macd_slow,
+          signalperiod: params.macd_signal,
+        },
+        input: 'close',
+        output: 'macd_line',
+      },
+      // Note: signal line is generated by MACD, we'll reference it as a column
+    ],
+    entryConditions: buildEntryConditions(),
+    exitConditions: buildExitConditions(),
+    parameters: {
+      rsi_period: params.rsi_period,
+      rsi_oversold: params.rsi_oversold,
+      rsi_overbought: params.rsi_overbought,
+      macd_fast: params.macd_fast,
+      macd_slow: params.macd_slow,
+      macd_signal: params.macd_signal,
+      stoploss: params.stoploss,
+      use_short: params.use_short,
+    },
+  };
+}
+
+export type { RsiMacdParams };

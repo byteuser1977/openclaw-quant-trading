@@ -1,8 +1,8 @@
 import { getDataManager, OHLCV } from '../data';
 import { getRiskIntegration, TradeSignal } from '../risk/integration';
-import { getVault } from '../core/vault';
-import { getLogger, Logger } from '../core/logger';
-import { ValidationError } from '../core/errors';
+import { getVault } from '../../core/vault';
+import { getLogger, Logger } from '../../core/logger';
+import { ValidationError } from '../../core/errors';
 
 /**
  * 回测配置参数

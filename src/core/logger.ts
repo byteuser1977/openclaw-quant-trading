@@ -124,7 +124,7 @@ class Logger {
     if (!Logger.instance) {
       Logger.init();
     }
-    const logger = name ? Logger.instance.child({ module: name }) : Logger.instance;
+    const logger = name ? Logger.instance!.child({ module: name }) : Logger.instance!;
     return logger;
   }
 
@@ -152,5 +152,8 @@ class Logger {
     Logger.getLogger().debug(message, ...args);
   }
 }
+
+// Convenience export for existing imports
+export const getLogger = Logger.getLogger.bind(Logger);
 
 export { Logger };

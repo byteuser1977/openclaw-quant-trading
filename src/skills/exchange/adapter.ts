@@ -1,5 +1,5 @@
-import { Vault, getVault } from '../core/vault';
-import { Allowlist, getAllowlist, createExchangeAllowlist } from '../core/allowlist';
+import { Vault, getVault } from '../../core/vault';
+import { Allowlist, getAllowlist, createExchangeAllowlist } from '../../core/allowlist';
 
 /**
  * Exchange Adapter - 交易所适配器（集成 Vault + Allowlist 示例）

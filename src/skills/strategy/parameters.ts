@@ -199,8 +199,17 @@ export class ParameterSpaceBuilder {
     return this.addParameter(new CategoricalParameter(name, choices, defaultVal, description));
   }
 
-  build(): ParameterSpace {
-    return { ...this.parameters };
+  build(): ParameterSpace & {
+    validate: (values: Record<string, any>) => { valid: boolean; errors: string[] };
+    generateRandomSample: (rng?: () => number) => Record<string, any>;
+  } {
+    const space: ParameterSpace & {
+      validate: (values: Record<string, any>) => { valid: boolean; errors: string[] };
+      generateRandomSample: (rng?: () => number) => Record<string, any>;
+    } = { ...this.parameters };
+    space.validate = this.validate.bind(this);
+    space.generateRandomSample = this.generateRandomSample.bind(this);
+    return space;
   }
 
   toJSON(): ParameterDefinition[] {

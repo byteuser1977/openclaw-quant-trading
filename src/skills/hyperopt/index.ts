@@ -1,5 +1,5 @@
-import { getBacktestEngine, BacktestConfig, BacktestResult } from './backtesting';
-import { ParameterSpace, ParameterSet, getParameterSpace } from './strategy/parameters';
+import { getBacktestEngine, BacktestConfig, BacktestResult } from '../backtesting';
+import { ParameterSpace, ParameterSet, getParameterSpace } from '../strategy/parameters';
 import { getLogger } from '../core/logger';
 
 /**

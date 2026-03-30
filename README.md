@@ -17,7 +17,7 @@
 ## 📦 交付物
 
 1. **技能包** - `openclaw-quant-trading` 完整技能包
-2. **策略模板库** - 5+ 个策略（MA Cross、RSI+MACD、ML Skeleton、Grid、DCA）
+2. **策略模板库** - ✅ 5+ 个策略（MA Cross、RSI+MACD、ML Skeleton、Grid、DCA）
 3. **风险管理组件** - 动态止损、仓位计算、熔断机制
 4. **数据管道** - 下载、验证、备份
 5. **监控通知** - 飞书 IM 消息模板、异常警报

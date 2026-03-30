@@ -207,17 +207,6 @@ class ConfigManager {
     return this.config;
   }
 
-  // Private helper only - no public duplicate
-  private getByPath(path: string): any {
-    const keys = path.split('.');
-    let current: any = this.config;
-    for (const key of keys) {
-      if (!current) return undefined;
-      current = current[key];
-    }
-    return current;
-  }
-
   reload(): void {
     this.config = { ...DefaultConfig };
     this.load();

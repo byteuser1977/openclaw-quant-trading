@@ -153,12 +153,7 @@ export class ThreadWorker<TInput = any, TOutput = any> {
    * 终止 worker
    */
   async terminate(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.worker.terminate((err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
+    return this.worker.terminate();
   }
 }
 

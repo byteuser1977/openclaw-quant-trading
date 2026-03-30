@@ -13,7 +13,7 @@ import {
   StrategyParameters,
   createParameterSpace,
   mergeParameterSpaces,
-} from '../../src/skills/strategy/parameters';
+} from '@/skills/strategy/parameters';
 
 describe('Parameter System', () => {
   describe('IntParameter', () => {

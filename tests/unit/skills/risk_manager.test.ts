@@ -120,7 +120,7 @@ describe('RiskManager', () => {
     test('should trigger on max drawdown', () => {
       rm.updateDailyMetrics({
         peakBalance: 10000,
-        currentBalance: 8500,
+        currentBalance: 8000, // 20% drawdown
       });
       const circuit = rm.checkCircuitBreaker({
         maxDrawdownThreshold: 0.2, // 20%

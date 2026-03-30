@@ -5,7 +5,7 @@
  * Checks: required methods, indicator dependencies, parameter definitions.
  */
 
-import { StrategyTemplate, Condition } from './compiler';
+import { StrategyTemplate, Condition, ConditionNode } from './compiler';
 import { IndicatorConfig } from './indicators';
 import { Logger } from '../../core/logger';
 import { exec } from 'child_process';
@@ -19,7 +19,7 @@ const execAsync = promisify(exec);
 export interface ValidationResult {
   valid: boolean;
   errors: StrategyValidationError[];
-  warnings: StrategyStrategyValidationWarning[];
+  warnings: StrategyValidationWarning[];
   metrics: ValidationMetrics;
 }
 
@@ -33,6 +33,7 @@ export interface StrategyValidationError {
 export interface StrategyValidationWarning {
   line?: number;
   message: string;
+  severity: 'warning';
   code: string;
 }
 
@@ -44,12 +45,49 @@ export interface ValidationMetrics {
   complexityScore: number; // 0-100
 }
 
+// Type guard for Condition (plain condition objects do NOT have a 'type' property)
+function isCondition(obj: Condition | ConditionNode): obj is Condition {
+  return !(obj as any).type;
+}
+
+// Extract condition from node (either standalone or within group)
+function getConditionFromNode(node: Condition | ConditionNode): Condition | null {
+  if (isCondition(node)) {
+    return node.condition;
+  }
+  // If it's a group, we don't return anything here; recursion will handle children
+  return null;
+}
+
+// Flatten conditions (including nested groups)
+function flattenConditions(conditions: (Condition | ConditionNode)[]): Condition[] {
+  const result: Condition[] = [];
+
+  function traverse(node: Condition | ConditionNode) {
+    if (isCondition(node)) {
+      // Plain condition
+      result.push(node);
+    } else {
+      // ConditionNode
+      if (node.type === 'condition' && node.condition) {
+        result.push(node.condition);
+      }
+      if (node.type === 'group' && node.children) {
+        node.children.forEach(traverse);
+      }
+    }
+  }
+
+  conditions.forEach(traverse);
+  return result;
+}
+
 export class StrategyValidator {
   private logger = Logger.getLogger('validator');
 
   async validateTemplate(template: StrategyTemplate): Promise<ValidationResult> {
     const errors: StrategyValidationError[] = [];
-    const warnings: StrategyStrategyValidationWarning[] = [];
+    const warnings: StrategyValidationWarning[] = [];
 
     // 1. Basic required fields
     if (!template.name || template.name.trim().length === 0) {
@@ -81,13 +119,16 @@ export class StrategyValidator {
       }
     }
 
-    // 3. Entry/Exit conditions validation
-    this.validateConditions(template.entryConditions, 'entry', errors, warnings);
-    this.validateConditions(template.exitConditions, 'exit', errors, warnings);
+    // 3. Entry/Exit conditions validation (flatten to Condition[])
+    this.validateConditionList(template.entryConditions, 'entry', errors, warnings);
+    this.validateConditionList(template.exitConditions, 'exit', errors, warnings);
 
     // 4. Check for undefined indicator references in conditions
     const indicatorOutputs = new Set(template.indicators.map((i) => i.output));
-    const allConditions = [...template.entryConditions, ...template.exitConditions];
+    const flatEntry = flattenConditions(template.entryConditions);
+    const flatExit = flattenConditions(template.exitConditions);
+    const allConditions = [...flatEntry, ...flatExit];
+
     for (const cond of allConditions) {
       if (!indicatorOutputs.has(cond.left) && cond.left !== 'open' && cond.left !== 'high' &&
           cond.left !== 'low' && cond.left !== 'close' && cond.left !== 'volume') {
@@ -114,12 +155,11 @@ export class StrategyValidator {
     const metrics: ValidationMetrics = {
       indicatorsCount: template.indicators.length,
       parametersCount: Object.keys(template.parameters).length,
-      entryConditions: template.entryConditions.length,
-      exitConditions: template.exitConditions.length,
+      entryConditions: flatEntry.length,
+      exitConditions: flatExit.length,
       complexityScore: this.calculateComplexity(template),
     };
 
-    // Success if no errors
     return {
       valid: errors.length === 0,
       errors,
@@ -129,7 +169,7 @@ export class StrategyValidator {
   }
 
   async validatePythonCode(pythonCode: string): Promise<ValidationResult> {
-    const errors: ValidationError[] = [];
+    const errors: StrategyValidationError[] = [];
     const warnings: StrategyValidationWarning[] = [];
 
     // 1. Syntax check using Python compiler
@@ -147,7 +187,7 @@ export class StrategyValidator {
       }
     } catch (error: any) {
       // Parse Python syntax error
-      const match = error.stderr.match(/.*?line (\d+).*?:\s*(.+)/);
+      const match = error.stderr?.match(/.*?line (\d+).*?:\s*(.+)/);
       if (match) {
         const line = parseInt(match[1], 10);
         const message = match[2].trim();
@@ -224,10 +264,7 @@ export class StrategyValidator {
   }
 
   async validate(template: StrategyTemplate, pythonCode?: string): Promise<ValidationResult> {
-    // First validate template
     const templateResult = await this.validateTemplate(template);
-
-    // If Python code provided, validate it too
     if (pythonCode) {
       const pythonResult = await this.validatePythonCode(pythonCode);
       return {
@@ -237,12 +274,13 @@ export class StrategyValidator {
         metrics: pythonResult.metrics,
       };
     }
-
     return templateResult;
   }
 
-  private validateConditions(conditions: Condition[], type: 'entry' | 'exit', errors: StrategyValidationError[], warnings: StrategyStrategyValidationWarning[]): void {
-    if (conditions.length === 0) {
+  private validateConditionList(conditions: (Condition | ConditionNode)[], type: 'entry' | 'exit', errors: StrategyValidationError[], warnings: StrategyValidationWarning[]): void {
+    const flat = flattenConditions(conditions);
+
+    if (flat.length === 0) {
       warnings.push({
         message: `No ${type} conditions defined`,
         severity: 'warning',
@@ -251,8 +289,8 @@ export class StrategyValidator {
       return;
     }
 
-    for (let i = 0; i < conditions.length; i++) {
-      const cond = conditions[i];
+    for (let i = 0; i < flat.length; i++) {
+      const cond = flat[i];
       if (!cond.left) {
         errors.push({ message: `Condition ${i + 1} missing left operand`, severity: 'error', code: 'VAL_009' });
       }
@@ -268,19 +306,12 @@ export class StrategyValidator {
         errors.push({ message: `Condition ${i + 1} missing right operand`, severity: 'error', code: 'VAL_012' });
       }
 
-      if (i > 0 && !cond.logic) {
-        warnings.push({
-          message: `Condition ${i + 1} missing logic operator, assuming AND`,
-          severity: 'warning',
-          code: 'VAL_W08',
-        });
-      }
+      // Skip logic warning for flattened list; original grouping determines logic
     }
   }
 
-  private validateParameters(params: Record<string, any>): ValidationError[] {
-    const errors: ValidationError[] = [];
-    // Simple validation: check for reserved parameter names conflicts
+  private validateParameters(params: Record<string, any>): StrategyValidationError[] {
+    const errors: StrategyValidationError[] = [];
     const reserved = ['timeframe', 'startup_candle_count', 'INTERFACE_VERSION', 'minimal_roi', 'stoploss'];
     for (const key of Object.keys(params)) {
       if (reserved.includes(key) && typeof params[key] === 'undefined') {
@@ -295,20 +326,18 @@ export class StrategyValidator {
   }
 
   private calculateComplexity(template: StrategyTemplate): number {
-    // Simple complexity metric: weighted sum of indicators, conditions, params
     const indicatorComplexity = template.indicators.length * 10;
-    const conditionComplexity = (template.entryConditions.length + template.exitConditions.length) * 5;
+    const conditionComplexity = flattenConditions(template.entryConditions).length + flattenConditions(template.exitConditions).length * 5;
     const paramComplexity = Object.keys(template.parameters).length * 2;
     const total = indicatorComplexity + conditionComplexity + paramComplexity;
     return Math.min(100, Math.round(total / 3));
   }
 
-  // Static analysis of Python code (no execution)
-  static analyzeCode(code: string): { hasEntrySignal: boolean; hasExitSignal: boolean; indicatorCount: number } {
-    const hasEntrySignal = code.includes('enter_long') || code.includes('buy');
-    const hasExitSignal = code.includes('exit_long') || code.includes('sell');
+  static analyzeCode(code: string): { hasEntry: boolean; hasExit: boolean; indicatorCount: number } {
+    const hasEntry = code.includes('enter_long') || code.includes('buy');
+    const hasExit = code.includes('exit_long') || code.includes('sell');
     const indicatorCount = (code.match(/ta\.\w+\(/g) || []).length;
-    return { hasEntrySignal, hasExitSignal, indicatorCount };
+    return { hasEntry, hasExit, indicatorCount };
   }
 }
 

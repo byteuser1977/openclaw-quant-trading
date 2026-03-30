@@ -26,6 +26,9 @@ module.exports = {
   setupFilesAfterEnv: ['<rootDir>/tests/jest.setup.js'],
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',
+    '^@core/(.*)$': '<rootDir>/src/core/$1',
+    '^@skills/(.*)$': '<rootDir>/src/skills/$1',
+    '^@utils/(.*)$': '<rootDir>/src/utils/$1',
   },
   verbose: true,
 };

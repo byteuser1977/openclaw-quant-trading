@@ -248,11 +248,11 @@ export class CircuitBreaker {
 
   constructor(config: CircuitBreakerConfig) {
     this.config = {
-      failureThreshold: 5,
-      resetTimeoutMs: 60000,
-      halfOpenMaxCalls: 3,
       ...config,
-    };
+      failureThreshold: config.failureThreshold ?? 5,
+      resetTimeoutMs: config.resetTimeoutMs ?? 60000,
+      halfOpenMaxCalls: config.halfOpenMaxCalls ?? 3,
+    } as Required<CircuitBreakerConfig>;
     this.instanceId = ++CircuitBreaker.instanceCount;
   }
 

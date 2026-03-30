@@ -12,11 +12,12 @@ export * from './parameters';
 export * from './indicators';
 export * from './compiler';
 export * from './validator';
+export * from './templates';
 
 // Re-exports for convenience
 import { ParameterSpace } from './parameters';
 import { IndicatorConfig, OHLCV, getIndicatorEngine } from './indicators';
-import { StrategyTemplate, Condition, compileStrategy, getStrategyCompiler } from './compiler';
+import { StrategyTemplate, Condition, ConditionNode, CompiledStrategy, compileStrategy, getStrategyCompiler } from './compiler';
 import { validateStrategy, ValidationResult, getStrategyValidator } from './validator';
 
 /**
