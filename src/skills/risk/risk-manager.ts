@@ -54,7 +54,8 @@ export class RiskManager {
           throw new Error('winRate, avgWin, avgLoss required for kelly');
         }
         const b = avgWin / Math.abs(avgLoss);
-        const kelly = winRate / b - (1 - winRate);
+        // Kelly fraction: (p*b - q) / b   where q = 1 - p
+        const kelly = (winRate * b - (1 - winRate)) / b;
         positionSize = balance * kelly * (kellyFraction || 1);
         break;
       case 'kelly_fraction':

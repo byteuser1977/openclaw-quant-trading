@@ -12,7 +12,10 @@
  */
 
 // 声明内置 Feishu 工具函数 (运行时注入)
-declare const feishu_bitable_app_table_record: (params: any) => Promise<any>;
+// Feishu Bitable App Table Record tool (injected at runtime). Use global if available; otherwise throw for safety.
+const feishu_bitable_app_table_record = (global as any).feishu_bitable_app_table_record as ((params:any) => Promise<any>) || (() => {
+  throw new Error('feishu_bitable_app_table_record is not available');
+});
 
 // 飞书 Bitable App Token
 const BITABLE_APP_TOKEN = 'TyRsbT7uyaFSydsgGPQcnFDlneg';
