@@ -1,0 +1,257 @@
+# OpenClaw Quant Trading Skill Package
+# 定义量化交易技能包的元数据、API、注入工具和配置
+
+name: quant-trading
+version: 1.0.0-beta
+description: |
+  基于 Freqtrade 核心能力的 OpenClaw 量化交易技能包。
+  提供策略开发、回测分析、参数优化、风险管理、数据管道的完整工作流。
+
+  - 策略模板库（5+ 预置模板）
+  - 完整风险管理组件
+  - 回测与性能报告
+  - Hyperopt 自动优化
+  - 飞书多维表格集成
+
+author: "Byte & OpenClaw Community"
+license: MIT
+homepage: "https://github.com/byteuser1977/openclaw-quant-trading"
+repository: "https://github.com/byteuser1977/openclaw-quant-trading"
+
+# 主入口模块（编译后为 dist/index.js）
+entry:
+  module: "src/index.ts"
+  output: "dist/index.js"
+
+# 运行时注入的工具函数（由 OpenClaw 平台提供）
+injectedTools:
+  - name: "feishu_bitable_app_table_record"
+    type: "function"
+    description: "飞书多维表格记录管理（CRUD）"
+    params:
+      action: "string"  # create, update, delete, list
+      app_token: "string"
+      table_id: "string"
+      fields: "object?"  # for create/update
+      record_id: "string?"  # for update/delete
+      filter: "object?"  # for list
+    returns: "Promise<any>"
+
+# 技能配置 Schema（用户在 UI 中配置）
+configSchema:
+  type: "object"
+  properties:
+    feishu_app_token:
+      type: "string"
+      title: "飞书多维表格 App Token"
+      description: "用于存储交易记录和策略配置"
+      default: "TyRsbT7uyaFSydsgGPQcnFDlneg"
+    risk.default_position_size_pct:
+      type: "number"
+      title: "默认仓位比例 (%)"
+      minimum: 0.1
+      maximum: 100
+      default: 10
+    risk.max_position_size_pct:
+      type: "number"
+      title: "最大仓位比例 (%)"
+      minimum: 0.1
+      maximum: 100
+      default: 20
+    risk.stop_loss_pct:
+      type: "number"
+      title: "默认止损比例 (%)"
+      minimum: 0.1
+      maximum: 50
+      default: 5
+    backtesting.default_stake_amount:
+      type: "number"
+      title: "默认交易金额 (USDT)"
+      minimum: 10
+      default: 1000
+    hyperopt.max_epochs:
+      type: "integer"
+      title: "Hyperopt 最大轮次"
+      minimum: 10
+      maximum: 1000
+      default: 100
+    logging.level:
+      type: "string"
+      title: "日志级别"
+      enum: ["DEBUG", "INFO", "WARNING", "ERROR"]
+      default: "INFO"
+  required: []
+
+# 技能能力清单（声明式 API）
+capabilities:
+  - id: "strategy"
+    name: "策略模块"
+    description: "创建、验证、编译策略模板"
+    methods:
+      - "create_strategy"
+      - "validate_strategy"
+      - "compile_strategy"
+      - "list_strategies"
+      - "get_strategy_metadata"
+
+  - id: "backtesting"
+    name: "回测引擎"
+    description: "执行历史回测并生成性能报告"
+    methods:
+      - "run_backtest"
+      - "get_backtest_result"
+      - "list_backtests"
+      - "delete_backtest"
+      - "export_backtest"
+
+  - id: "hyperopt"
+    name: "参数优化"
+    description: "基于 Optuna 的超参数搜索"
+    methods:
+      - "define_parameter_space"
+      - "run_hyperopt"
+      - "get_hyperopt_result"
+      - "get_best_params"
+      - "visualize_optimization"
+
+  - id: "risk"
+    name: "风险管理"
+    description: "仓位计算、止损、熔断"
+    methods:
+      - "calculate_position_size"
+      - "compute_kelly_fraction"
+      - "check_circuit_breaker"
+      - "calculate_dynamic_stoploss"
+      - "validate_risk_parameters"
+
+  - id: "data"
+    name: "数据管理"
+    description: "历史数据下载、验证、更新"
+    methods:
+      - "download_data"
+      - "validate_data"
+      - "list_data"
+      - "convert_data"
+      - "update_data"
+
+  - id: "exchange"
+    name: "交易所适配"
+    description: "多交易所 API 统一接口"
+    methods:
+      - "connect_exchange"
+      - "get_balance"
+      - "create_order"
+      - "cancel_order"
+      - "get_order_status"
+
+  - id: "persistence"
+    name: "数据持久化"
+    description: "交易记录存储与查询（飞书多维表格）"
+    methods:
+      - "save_trade"
+      - "get_trades"
+      - "update_trade"
+      - "backup_database"
+      - "restore_database"
+
+  - id: "reporting"
+    name: "报告生成"
+    description: "性能报告与可视化图表"
+    methods:
+      - "generate_report"
+      - "calculate_statistics"
+      - "plot_equity_curve"
+      - "plot_trades_distribution"
+      - "export_statistics"
+
+# 内置策略模板列表
+builtinTemplates:
+  - id: "macross"
+    name: "MA Cross (均线交叉)"
+    description: "快速均线与慢速均线交叉策略，适合趋势跟踪"
+    category: "trend"
+    difficulty: "beginner"
+    defaultParameters:
+      fast_period: 10
+      slow_period: 30
+      stoploss: -0.05
+      trailing_stoploss: 0.02
+
+  - id: "rsi_macd"
+    name: "RSI + MACD"
+    description: "RSI 超买超卖结合 MACD 金叉死叉，震荡市策略"
+    category: "oscillator"
+    difficulty: "intermediate"
+    defaultParameters:
+      rsi_period: 14
+      rsi_overbought: 70
+      rsi_oversold: 30
+      macd_fast: 12
+      macd_slow: 26
+      macd_signal: 9
+
+  - id: "dca"
+    name: "DCA (定投策略)"
+    description: "定期定额买入，长期持有，适合熊市攒币"
+    category: "passive"
+    difficulty: "beginner"
+    defaultParameters:
+      interval_hours: 24
+      amount_per_interval: 100
+      max_total_investment: 10000
+      target_exit_pct: 20
+
+  - id: "grid"
+    name: "Grid (网格交易)"
+    description: "在价格区间内自动高抛低吸，适合震荡市"
+    category: "market_making"
+    difficulty: "intermediate"
+    defaultParameters:
+      grid_levels: 10
+      grid_spacing_pct: 1.0
+      base_price_mode: "auto"
+
+  - id: "ml_skeleton"
+    name: "ML Skeleton (机器学习骨架)"
+    description: "提供 on_train/on_predict 钩子，用户可自定义 ML 模型"
+    category: "machine_learning"
+    difficulty: "advanced"
+    defaultParameters:
+      model_type: "random_forest"
+      features: ["rsi", "macd", "ema_10", "ema_30"]
+      retrain_interval_days: 7
+
+# 资源文件清单（打包时包含）
+resources:
+  - path: "docs/"
+    destination: "docs/"
+    description: "用户文档"
+  - path: "examples/"
+    destination: "examples/"
+    description: "示例代码"
+  - path: "README.md"
+    destination: "README.md"
+  - path: "LICENSE"
+    destination: "LICENSE"
+
+# 打包配置
+build:
+  # TypeScript 编译
+  tsconfig: "tsconfig.json"
+  outDir: "dist"
+  # 排除文件
+  exclude:
+    - "node_modules"
+    - "coverage"
+    - ".git"
+    - "memory"
+    - "configs"  # 用户配置文件不打包
+    - "tests"    # 测试文件不打包
+
+# 发布配置
+publish:
+  target: "feishu-wiki"  # 或 "clawhub"
+  space_id: "UzZswJlSzinKEtkIqQkcaGu8nte"  # 正确空间 ID
+  category: "量化交易技能包"
+  tags: ["quant", "trading", "freqtrade", "backtest", "hyperopt"]
+  visibility: "团队可见"  # 或 "公开"
