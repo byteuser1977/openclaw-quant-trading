@@ -1,10 +1,12 @@
 # 量化技能开发者 Agent (quant-skill-developer)
 
+> **⚠️ Beta 版本** - 当前为 Beta 发布状态，部分测试尚未通过，详见已知问题。
+
 ## 🎯 职责
 
 - 开发、测试、优化量化交易相关 OpenClaw 技能
 - 集成 Freqtrade 与 OpenClaw 生态
-- 创建策略模板、风险管理模块、数据管道
+- 创建策略模板、风险管理组件、数据管道
 - 编写文档和最佳实践
 
 ## 🛠️ 技术栈
@@ -61,8 +63,17 @@ quant-skill-developer/
 - **团队协作技能指南**: https://ncnm51noy8kt.feishu.cn/wiki/UzZswJlSzinKEtkIqQkcaGu8nte
 - **本地知识库**: `/Volumes/DATA/data/clawd/data/knowledge/`
 
+## ⚠️ 已知问题 (Beta 限制)
+
+- **单元测试**: 仍有 3 个测试套件（共 9 个测试）失败，主要涉及 TypeScript 类型错误和逻辑断言问题。详情见 `memory/2026-03-31-test-results.md`。
+- **覆盖率**: Beta 阈值设为 45% (branches), 55% (statements)。当前覆盖率约 61.5% statements, 49.3% branches。
+- **未完善模块**: Exchange 集成、部分 Strategy 编译器功能、Hyperopt 参数采样等暂未完全就绪。
+- **文档**: API 参考和最佳实践仍在完善中。
+
+这些将在 Phase 5 (维护迭代) 中逐步修复。
+
 ---
 
 **创建时间**: 2026-03-22
 **创建人**: 小新 (OpenClaw Assistant)
-**版本**: v1.0
+**版本**: v1.0-beta
