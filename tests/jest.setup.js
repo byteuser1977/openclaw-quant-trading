@@ -71,8 +71,39 @@ jest.mock('../src/core/config', () => ({
       maxFiles: 10,
       maxSizeMB: 10,
     },
+    feishu_app_token: 'test_app_token',
   }),
 }));
+
+// Mock Feishu Bitable App Table Record (injected tool)
+// Persistence module depends on this global function
+global.feishu_bitable_app_table_record = jest.fn().mockImplementation(async (params) => {
+  // Mock successful response
+  if (params.action === 'create' || params.action === 'batch_create') {
+    return {
+      code: 0,
+      msg: 'success',
+      data: {
+        record: { id: `mock_record_${Date.now()}` },
+      },
+    };
+  }
+  if (params.action === 'list') {
+    return {
+      code: 0,
+      msg: 'success',
+      data: {
+        items: [],
+        total: 0,
+        has_more: false,
+      },
+    };
+  }
+  if (params.action === 'delete' || params.action === 'batch_delete') {
+    return { code: 0, msg: 'success' };
+  }
+  return { code: 0, msg: 'success', data: {} };
+});
 
 // Silence console logs during tests (optional)
 if (process.env.NODE_ENV !== 'test') {
