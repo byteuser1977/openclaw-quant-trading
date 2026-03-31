@@ -7,7 +7,10 @@
 
 import { ParameterSpace } from './parameters';
 import { IndicatorConfig } from './indicators';
-import { Logger } from '../../core/logger';
+import { getLogger } from '../../core/logger';
+
+export type { IndicatorConfig };
+export type { ParameterSpace };
 
 export interface CompiledStrategy {
   code: string;
@@ -53,10 +56,10 @@ export interface ConditionNode {
 }
 
 export class StrategyCompiler {
-  private logger: Logger;
+  private logger: any;
 
   constructor() {
-    this.logger = Logger.getLogger('compiler');
+    this.logger = getLogger('compiler');
   }
 
   compile(template: StrategyTemplate): CompiledStrategy {

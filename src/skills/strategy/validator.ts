@@ -7,7 +7,7 @@
 
 import { StrategyTemplate, Condition, ConditionNode } from './compiler';
 import { IndicatorConfig } from './indicators';
-import { Logger } from '../../core/logger';
+import { getLogger } from '../../core/logger';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
@@ -53,9 +53,13 @@ function isCondition(obj: Condition | ConditionNode): obj is Condition {
 // Extract condition from node (either standalone or within group)
 function getConditionFromNode(node: Condition | ConditionNode): Condition | null {
   if (isCondition(node)) {
+    // Plain condition object, return it directly
+    return node;
+  }
+  // For ConditionNode with type 'condition', return its condition property
+  if (node.type === 'condition' && node.condition) {
     return node.condition;
   }
-  // If it's a group, we don't return anything here; recursion will handle children
   return null;
 }
 
@@ -83,7 +87,7 @@ function flattenConditions(conditions: (Condition | ConditionNode)[]): Condition
 }
 
 export class StrategyValidator {
-  private logger = Logger.getLogger('validator');
+  private logger: any = getLogger('validator');
 
   async validateTemplate(template: StrategyTemplate): Promise<ValidationResult> {
     const errors: StrategyValidationError[] = [];

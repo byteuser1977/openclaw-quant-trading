@@ -261,3 +261,8 @@ export function createExchangeAllowlist(
     },
   ];
 }
+
+// Test helper: clear global singleton
+(getAllowlist as any).__clear = function() {
+  globalAllowlist = null;
+};

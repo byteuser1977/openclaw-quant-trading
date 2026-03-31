@@ -1,6 +1,10 @@
 import { getBacktestEngine, BacktestEngine } from '@/skills/backtesting';
 import { OHLCV } from '@/skills/data';
 import { TradeSignal } from '@/skills/risk/integration';
+import { initVault } from '@/core/vault';
+
+// Set dummy master key for tests
+process.env.OPENCLAW_QUANT_MASTER_KEY = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
 // Mock data helper
 function createMockCandle(timestamp: number, close: number, high?: number, low?: number, open?: number): OHLCV {
@@ -17,7 +21,8 @@ function createMockCandle(timestamp: number, close: number, high?: number, low?:
 describe('BacktestEngine', () => {
   let engine: BacktestEngine;
 
-  beforeAll(() => {
+  beforeAll(async () => {
+    await initVault(); // Initialize vault singleton
     engine = getBacktestEngine();
   });
 

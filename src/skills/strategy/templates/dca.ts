@@ -106,4 +106,3 @@ export function createDcaStrategy(
   };
 }
 
-export type { DcaParams };

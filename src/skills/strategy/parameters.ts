@@ -203,12 +203,14 @@ export class ParameterSpaceBuilder {
     validate: (values: Record<string, any>) => { valid: boolean; errors: string[] };
     generateRandomSample: (rng?: () => number) => Record<string, any>;
   } {
-    const space: ParameterSpace & {
+    const space = {
+      ...this.parameters,
+      validate: this.validate.bind(this),
+      generateRandomSample: this.generateRandomSample.bind(this),
+    } as ParameterSpace & {
       validate: (values: Record<string, any>) => { valid: boolean; errors: string[] };
       generateRandomSample: (rng?: () => number) => Record<string, any>;
-    } = { ...this.parameters };
-    space.validate = this.validate.bind(this);
-    space.generateRandomSample = this.generateRandomSample.bind(this);
+    };
     return space;
   }
 

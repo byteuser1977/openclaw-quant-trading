@@ -325,6 +325,42 @@ export class RiskManager {
     this.weeklyPnL = 0;
     this.consecutiveLosses = 0;
   }
+
+  /**
+   * Fixed ratio position sizing (new API)
+   */
+  calculateFixedRatio(config: {
+    balance: number;
+    riskPerTrade: number;
+    entryPrice: number;
+    stoplossPct: number;
+  }): { positionSize: number } {
+    const riskAmount = config.balance * config.riskPerTrade;
+    const positionValue = riskAmount / config.stoplossPct;
+    const positionSize = positionValue / config.entryPrice;
+    return { positionSize };
+  }
+
+  /**
+   * Kelly criterion position sizing (new API)
+   */
+  calculateKelly(config: {
+    balance: number;
+    entryPrice: number;
+    winRate: number;
+    avgWin: number;
+    avgLoss: number;
+    kellyFraction?: number;
+  }): { positionSize: number } {
+    const b = config.avgWin / Math.abs(config.avgLoss);
+    const p = config.winRate;
+    const kellyFull = (p * b - (1 - p)) / b;
+    const fraction = config.kellyFraction ?? 0.5;
+    const positionRatio = kellyFull * fraction;
+    const positionValue = config.balance * positionRatio;
+    const positionSize = positionValue / config.entryPrice;
+    return { positionSize };
+  }
 }
 
 // Singleton

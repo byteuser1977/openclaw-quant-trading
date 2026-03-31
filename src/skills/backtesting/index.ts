@@ -1,7 +1,7 @@
 import { getDataManager, OHLCV } from '../data';
 import { getRiskIntegration, TradeSignal } from '../risk/integration';
 import { getVault } from '../../core/vault';
-import { getLogger, Logger } from '../../core/logger';
+import { getLogger } from '../../core/logger';
 import { ValidationError } from '../../core/errors';
 
 /**
@@ -108,7 +108,7 @@ export interface EquityPoint {
  * - 结果分析
  */
 export class BacktestEngine {
-  private logger: Logger;
+  private logger: any;
   private dataManager = getDataManager();
   private riskIntegration = getRiskIntegration();
   private vault = getVault();
@@ -164,8 +164,9 @@ export class BacktestEngine {
       }
 
       // 检查止损 (如果有持仓)
+      let stoplossExit = false;
       if (state.position !== 0 && state.entryPrice !== null) {
-        const stoplossExit = this.checkStoploss(state, candle, config.riskConfig);
+        stoplossExit = this.checkStoploss(state, candle, config.riskConfig);
         if (stoplossExit) {
           this.exitPosition(state, currentPrice, 'stoploss');
         }
@@ -268,7 +269,7 @@ export class BacktestEngine {
     config: BacktestConfig
   ): Promise<void> {
     // 通过 RiskIntegration 检查是否允许交易
-    const evaluation = this.riskIntegration.evaluateSignal(signal, {
+    const evaluation = await this.riskIntegration.evaluateSignal(signal, {
       positionMethod: config.riskConfig?.positionMethod,
       riskPerTrade: config.riskConfig?.riskPerTrade,
       stoplossPct: config.riskConfig?.stoplossPct,

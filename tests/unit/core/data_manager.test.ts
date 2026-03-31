@@ -1,5 +1,9 @@
 import { getDataManager, DataManager, OHLCV } from '@/skills/data';
 import { getRiskManager } from '@/skills/risk';
+import { initVault } from '@/core/vault';
+
+// Set dummy master key for tests
+process.env.OPENCLAW_QUANT_MASTER_KEY = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
 /**
  * Simple mock data for validation tests
@@ -16,7 +20,12 @@ const mockData: OHLCV[] = [
 ];
 
 describe('DataManager validation & cleaning', () => {
-  const manager = getDataManager();
+  let manager: DataManager;
+
+  beforeAll(async () => {
+    await initVault(); // Initialize vault singleton
+    manager = getDataManager();
+  });
 
   test('validateData detects issues', () => {
     const result = manager.validateData(mockData);
@@ -36,7 +45,12 @@ describe('DataManager validation & cleaning', () => {
 });
 
 describe('RiskManager position sizing', () => {
-  const risk = getRiskManager();
+  let risk: any;
+
+  beforeAll(async () => {
+    await initVault(); // Ensure vault is ready
+    risk = getRiskManager();
+  });
 
   test('fixed ratio calculation', () => {
     const result = risk.calculateFixedRatio({

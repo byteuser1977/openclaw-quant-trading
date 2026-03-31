@@ -7,15 +7,10 @@
 
 // Explicit exports to avoid name conflicts
 export { createMACrossStrategy } from './macross';
-export type { MACrossParams } from './macross';
 export { createRsiMacdStrategy } from './rsi_macd';
-export type { RsiMacdParams } from './rsi_macd';
 export { createGridStrategy } from './grid';
-export type { GridParams } from './grid';
 export { createDcaStrategy } from './dca';
-export type { DcaParams } from './dca';
 export { createMlSkeletonStrategy } from './ml_skeleton';
-export type { MlSkeletonParams } from './ml_skeleton';
 
 // Template registry for easy discovery
 import type { StrategyTemplate } from '../compiler';

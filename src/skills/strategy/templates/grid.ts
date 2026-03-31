@@ -108,4 +108,3 @@ export function createGridStrategy(
   };
 }
 
-export type { GridParams };

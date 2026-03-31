@@ -193,4 +193,3 @@ export function createMlSkeletonStrategy(
   };
 }
 
-export type { MlSkeletonParams };

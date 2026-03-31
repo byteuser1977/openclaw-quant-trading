@@ -196,5 +196,3 @@ export function createRsiMacdStrategy(
     },
   };
 }
-
-export type { RsiMacdParams };

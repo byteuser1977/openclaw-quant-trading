@@ -16,7 +16,7 @@ export interface IndicatorFunction {
 export interface IndicatorConfig {
   name: string;
   function: string;
-  params: Record<string, number>;
+  params: Record<string, any>;
   input: 'open' | 'high' | 'low' | 'close' | 'volume';
   output: string;
   custom?: {
@@ -32,8 +32,8 @@ export interface IndicatorResult {
 
 // Abstract base for indicator providers
 abstract class IndicatorProvider {
-  abstract supports(indicator: string): boolean;
-  abstract calculate(indicator: string, data: OHLCV[], params: Record<string, number>): number[];
+  abstract supports(indicator: string): boolean | Promise<boolean>;
+  abstract calculate(indicator: string, data: OHLCV[], params: Record<string, number>): number[] | Promise<number[]>;
 }
 
 // Pure JS implementation (fallback)
@@ -267,7 +267,7 @@ class JSIndicatorProvider extends IndicatorProvider {
         return this.vwma(close, volume, params.timeperiod || 14);
       case 'STOCH': {
         const { fastk, fastd } = this.stoch(high, low, close, params.fastk_period || 14, params.slowk_period || 3, params.slowd_period || 3);
-        return params.output === 'fastd' ? fastd : fastk;
+        return typeof params.output === 'string' && params.output === 'fastd' ? fastd : fastk;
       }
       default:
         throw new Error(`Unsupported indicator in JS provider: ${indicator}`);
@@ -337,7 +337,7 @@ export type OHLCV = DataOHLCV;
 export class IndicatorEngine {
   private providers: IndicatorProvider[] = [];
   private fallbackProvider: JSIndicatorProvider;
-  private logger: winston.Logger;
+  private logger: any;
 
   constructor() {
     this.fallbackProvider = new JSIndicatorProvider();
@@ -380,7 +380,16 @@ export class IndicatorEngine {
   }
 
   private getInputArray(data: OHLCV[], input: string): number[] {
-    return data.map((d) => d[input]);
+    return data.map((d) => {
+      switch (input) {
+        case 'open': return d.open;
+        case 'high': return d.high;
+        case 'low': return d.low;
+        case 'close': return d.close;
+        case 'volume': return d.volume;
+        default: return d.close;
+      }
+    });
   }
 
   async calculateMultiple(configs: IndicatorConfig[], data: OHLCV[]): Promise<Map<string, number[]>> {
@@ -457,6 +466,7 @@ export class IndicatorEngine {
 
   calculateEMA(data: number[], params: { timeperiod: number }): number[] {
     const ohlcvArray: OHLCV[] = data.map((close, i) => ({
+      timestamp: i,
       open: close,
       high: close,
       low: close,
@@ -476,6 +486,7 @@ export class IndicatorEngine {
 
   calculateSMA(data: number[], params: { timeperiod: number }): number[] {
     const ohlcvArray: OHLCV[] = data.map((close, i) => ({
+      timestamp: i, // placeholder
       open: close,
       high: close,
       low: close,
@@ -495,6 +506,7 @@ export class IndicatorEngine {
 
   calculateMACD(data: number[], params: { fastperiod: number; slowperiod: number; signalperiod: number }): { macdLine: number[]; signalLine: number[]; histogram: number[] } {
     const ohlcvArray: OHLCV[] = data.map((close, i) => ({
+      timestamp: i,
       open: close,
       high: close,
       low: close,
@@ -533,6 +545,7 @@ export class IndicatorEngine {
 
   calculateBollingerBands(data: number[], params: { timeperiod: number; nbdevup: number; nbdevdn: number }): { upper: number[]; middle: number[]; lower: number[] } {
     const ohlcvArray: OHLCV[] = data.map((close, i) => ({
+      timestamp: i,
       open: close,
       high: close,
       low: close,

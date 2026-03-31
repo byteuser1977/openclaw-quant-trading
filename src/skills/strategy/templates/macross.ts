@@ -112,5 +112,3 @@ export function createMACrossStrategy(
     },
   };
 }
-
-export type { MACrossParams };
