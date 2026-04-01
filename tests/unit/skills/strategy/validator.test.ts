@@ -279,7 +279,7 @@ describe('Strategy Validator', () => {
     });
   });
 
-  describe('validatePythonCode', async () => {
+  describe('validatePythonCode', () => {
     it('should validate correct Python code', async () => {
       const pythonCode = `
 from freqtrade.strategy import IStrategy

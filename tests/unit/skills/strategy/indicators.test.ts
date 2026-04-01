@@ -1,4 +1,4 @@
-import { getIndicatorEngine } from '@/skills/strategy/indicators';
+import { getIndicatorEngine, IndicatorConfig } from '@/skills/strategy/indicators';
 import { OHLCV } from '@/skills/data';
 
 describe('IndicatorEngine (New API)', () => {
@@ -96,16 +96,18 @@ describe('IndicatorEngine (New API)', () => {
         data
       );
       expect(result.values.length).toBe(50);
-      // MACD line should have some values (not all NaN)
+      // MACD line valid values start after slow EMA becomes valid (index 25)
+      // With 50 points and slow period 26, expect about 25 valid values
       const validCount = result.values.filter(v => !isNaN(v as number)).length;
-      expect(validCount).toBeGreaterThan(30); // After slow period (26) + signal (9)
+      expect(validCount).toBeGreaterThanOrEqual(20); // At least 20 valid values
+      expect(validCount).toBeLessThan(50); // Not all values are valid (NaNs at start)
     });
   });
 
   describe('Multiple indicators', () => {
     it('should calculate multiple indicators efficiently', () => {
       const data = createMockData(50);
-      const configs = [
+      const configs: IndicatorConfig[] = [
         {
           name: 'ema_fast',
           function: 'EMA',

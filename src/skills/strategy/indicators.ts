@@ -59,17 +59,31 @@ class JSIndicatorProvider extends IndicatorProvider {
   private ema(data: number[], period: number): number[] {
     const result: number[] = [];
     const multiplier = 2 / (period + 1);
-    let prevEMA = data[0]; // Start with first value
 
-    for (let i = 0; i < data.length; i++) {
-      if (i === 0) {
-        result.push(prevEMA);
-      } else {
-        const ema = (data[i] - prevEMA) * multiplier + prevEMA;
-        result.push(ema);
-        prevEMA = ema;
-      }
+    // First (period-1) values are NaN (need enough data for SMA)
+    for (let i = 0; i < period - 1; i++) {
+      result.push(NaN);
     }
+
+    if (data.length < period) {
+      return result; // Not enough data
+    }
+
+    // Use SMA of first 'period' values as initial EMA
+    let sum = 0;
+    for (let i = 0; i < period; i++) {
+      sum += data[i];
+    }
+    let prevEMA = sum / period;
+    result.push(prevEMA);
+
+    // Continue with EMA formula for remaining values
+    for (let i = period; i < data.length; i++) {
+      const ema = (data[i] - prevEMA) * multiplier + prevEMA;
+      result.push(ema);
+      prevEMA = ema;
+    }
+
     return result;
   }
 
