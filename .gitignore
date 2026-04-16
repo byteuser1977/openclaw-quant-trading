@@ -20,12 +20,14 @@ build/
 .vscode/
 .idea/
 *.swp
+*.swo
 .DS_Store
 
 # Logs
 logs/
 *.log
 coverage/
+.nyc_output
 
 # OS generated files
 Thumbs.db
@@ -43,10 +45,11 @@ Desktop.ini
 # Cache
 .cache/
 .parcel-cache/
+.terraform/
 
 # Test artifacts
-/test-results/
-/jest/
+test-results/
+playwright-report/
 
 # Temporary files
 tmp/
@@ -57,7 +60,12 @@ uploads/
 data/
 reports/
 
-# Skill-specific
-skills/*/dist/
-skills/*/node_modules/
-configs/local.yaml
+# Secrets
+secrets/
+*.pem
+*.key
+*.crt
+
+# Package lock (choose one)
+# package-lock.json
+yarn.lock

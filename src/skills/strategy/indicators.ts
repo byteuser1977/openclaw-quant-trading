@@ -1,623 +1,553 @@
 /**
  * Technical Indicators Framework
- *
- * Provides a unified interface for calculating technical indicators.
- * Supports both TA-Lib (native) and pure JavaScript fallback implementations.
+ * 封装 TA-Lib + 提供 JS 软回退
  */
 
-import { Logger } from '../../core/logger';
-import { OHLCV as DataOHLCV } from '../data';
+import { getLogger } from '../../core/logger';
 
-// Indicator function signature
-export interface IndicatorFunction {
-  (input: number[]): number[];
+const logger = getLogger('indicators');
+
+// TA-Lib 软链接检测标志
+let talibAvailable = false;
+let talibModule: any = null;
+
+/**
+ * 初始化 TA-Lib（尝试加载，失败则使用软回退）
+ */
+export async function initIndicators(): Promise<void> {
+  try {
+    // @ts-ignore - TA-Lib 类型定义可能缺失
+    talibModule = await import('talib');
+    talibAvailable = true;
+    logger.info('TA-Lib loaded successfully', { mode: 'native' });
+  } catch (error) {
+    logger.warn('TA-Lib not available, falling back to JS implementations', { error: String(error) });
+    talibAvailable = false;
+  }
 }
 
-export interface IndicatorConfig {
-  name: string;
-  function: string;
-  params: Record<string, any>;
-  input: 'open' | 'high' | 'low' | 'close' | 'volume';
-  output: string;
-  custom?: {
-    formula?: string; // For custom Python-style formulas
-  };
+/**
+ * 检查 TA-Lib 是否可用
+ */
+export function isTalibAvailable(): boolean {
+  return talibAvailable;
 }
 
+/**
+ * 指标输入数据结构
+ * 所有字段可选，但 close 必填（大多数指标需要）
+ */
+export interface IndicatorInput {
+  open?: number[];
+  high?: number[];
+  low?: number[];
+  close: number[];
+  volume?: number[];
+}
+
+/**
+ * 指标结果接口
+ */
 export interface IndicatorResult {
   name: string;
   values: number[];
-  index: number; // Which array index corresponds to current candle
+  params?: Record<string, any>;
 }
 
-// Abstract base for indicator providers
-abstract class IndicatorProvider {
-  abstract supports(indicator: string): boolean | Promise<boolean>;
-  abstract calculate(indicator: string, data: OHLCV[], params: Record<string, number>): number[] | Promise<number[]>;
-}
+// =====================================================
+// Helper Functions
+// =====================================================
 
-// Pure JS implementation (fallback)
-class JSIndicatorProvider extends IndicatorProvider {
-  // Simple Moving Average
-  private sma(data: number[], period: number): number[] {
-    const result: number[] = [];
-    for (let i = 0; i < data.length; i++) {
-      if (i < period - 1) {
-        result.push(NaN);
-      } else {
-        let sum = 0;
-        for (let j = 0; j < period; j++) {
-          sum += data[i - j];
-        }
-        result.push(sum / period);
-      }
-    }
-    return result;
+/**
+ * 确保输入数据长度足够
+ */
+function ensureLength(input: number[], required: number, indicatorName: string): number[] {
+  if (input.length < required) {
+    logger.warn(`${indicatorName}: input length ${input.length} < required ${required}, padding with NaN`);
+    return [...input, ...Array(required - input.length).fill(NaN)];
   }
+  return input;
+}
 
-  // Exponential Moving Average
-  private ema(data: number[], period: number): number[] {
-    const result: number[] = [];
-    const multiplier = 2 / (period + 1);
-
-    // First (period-1) values are NaN (need enough data for SMA)
-    for (let i = 0; i < period - 1; i++) {
+/**
+ * SMA (Simple Moving Average)
+ */
+export function SMA(close: number[], period: number = 14): number[] {
+  const result: number[] = [];
+  for (let i = 0; i < close.length; i++) {
+    if (i < period - 1) {
       result.push(NaN);
+    } else {
+      const sum = close.slice(i - period + 1, i + 1).reduce((a, b) => a + b, 0);
+      result.push(sum / period);
     }
+  }
+  return result;
+}
 
-    if (data.length < period) {
-      return result; // Not enough data
-    }
+/**
+ * EMA (Exponential Moving Average)
+ */
+export function EMA(close: number[], period: number = 14): number[] {
+  const multiplier = 2 / (period + 1);
+  const result: number[] = [];
 
-    // Use SMA of first 'period' values as initial EMA
-    let sum = 0;
-    for (let i = 0; i < period; i++) {
-      sum += data[i];
-    }
-    let prevEMA = sum / period;
-    result.push(prevEMA);
+  // First value is SMA
+  const sma = SMA(close, period);
+  let prevEMA = sma[period - 1];
 
-    // Continue with EMA formula for remaining values
-    for (let i = period; i < data.length; i++) {
-      const ema = (data[i] - prevEMA) * multiplier + prevEMA;
+  for (let i = 0; i < close.length; i++) {
+    if (i < period - 1) {
+      result.push(NaN);
+    } else if (i === period - 1) {
+      result.push(prevEMA);
+    } else {
+      const ema = (close[i] - prevEMA) * multiplier + prevEMA;
       result.push(ema);
       prevEMA = ema;
     }
-
-    return result;
   }
 
-  // RSI - Relative Strength Index
-  private rsi(close: number[], period: number = 14): number[] {
-    const result: number[] = [];
-    const changes: number[] = [0];
+  return result;
+}
 
-    for (let i = 1; i < close.length; i++) {
-      changes.push(close[i] - close[i - 1]);
+/**
+ * WMA (Weighted Moving Average)
+ */
+export function WMA(close: number[], period: number = 14): number[] {
+  const result: number[] = [];
+  const weightSum = (period * (period + 1)) / 2;
+
+  for (let i = 0; i < close.length; i++) {
+    if (i < period - 1) {
+      result.push(NaN);
+    } else {
+      let weightedSum = 0;
+      for (let j = 0; j < period; j++) {
+        weightedSum += close[i - period + 1 + j] * (j + 1);
+      }
+      result.push(weightedSum / weightSum);
     }
+  }
 
-    const gains = changes.map((c) => (c > 0 ? c : 0));
-    const losses = changes.map((c) => (c < 0 ? -c : 0));
+  return result;
+}
 
-    let avgGain = 0;
-    let avgLoss = 0;
+/**
+ * RSI (Relative Strength Index)
+ *
+ * @example
+ * const rsi = RSI(close, 14);
+ */
+export function RSI(close: number[], period: number = 14): number[] {
+  if (close.length === 0) return [];
 
-    // First average
-    for (let i = 1; i <= period; i++) {
-      avgGain += gains[i];
-      avgLoss += losses[i];
-    }
-    avgGain /= period;
-    avgLoss /= period;
+  const changes: number[] = [];
+  for (let i = 1; i < close.length; i++) {
+    changes.push(close[i] - close[i - 1]);
+  }
 
-    // First RSI
-    const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
-    result.push(100 - 100 / (1 + rs));
+  const gains = changes.map(c => c > 0 ? c : 0);
+  const losses = changes.map(c => c < 0 ? -c : 0);
 
-    // Smoothed RSI for rest
-    for (let i = period + 1; i < close.length; i++) {
-      avgGain = (avgGain * (period - 1) + gains[i]) / period;
-      avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
-      const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+  const avgGain = SMA(gains, period);
+  const avgLoss = SMA(losses, period);
+
+  const result: number[] = [NaN]; // first element has no change
+
+  for (let i = 0; i < avgGain.length; i++) {
+    if (avgLoss[i] === 0) {
+      result.push(100);
+    } else {
+      const rs = avgGain[i] / avgLoss[i];
       result.push(100 - 100 / (1 + rs));
     }
-
-    // Pad beginning with NaNs
-    while (result.length < close.length) {
-      result.unshift(NaN);
-    }
-    return result;
   }
 
-  // MACD - Moving Average Convergence Divergence
-  private macd(close: number[], fastPeriod = 12, slowPeriod = 26, signalPeriod = 9): { macd: number[]; signal: number[]; histogram: number[] } {
-    const fastEMA = this.ema(close, fastPeriod);
-    const slowEMA = this.ema(close, slowPeriod);
-    const macdLine = close.map((_, i) => fastEMA[i] - slowEMA[i]);
-    const signalLine = this.ema(macdLine, signalPeriod);
-    const histogram = macdLine.map((v, i) => v - signalLine[i]);
-
-    return { macd: macdLine, signal: signalLine, histogram };
-  }
-
-  // ATR - Average True Range
-  private atr(high: number[], low: number[], close: number[], period = 14): number[] {
-    const tr: number[] = [0]; // First TR is undefined
-
-    for (let i = 1; i < high.length; i++) {
-      const hl = high[i] - low[i];
-      const hc = Math.abs(high[i] - close[i - 1]);
-      const lc = Math.abs(low[i] - close[i - 1]);
-      tr.push(Math.max(hl, hc, lc));
-    }
-
-    // Smoothed ATR (Wilder's smoothing)
-    const atr: number[] = [];
-    let sum = 0;
-    for (let i = 1; i <= period; i++) {
-      sum += tr[i];
-      atr.push(NaN);
-    }
-    atr[period] = sum / period;
-
-    for (let i = period + 1; i < high.length; i++) {
-      atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period;
-    }
-
-    return atr;
-  }
-
-  // Bollinger Bands
-  private bbands(close: number[], period = 20, stdDev = 2): { upper: number[]; middle: number[]; lower: number[] } {
-    const sma = this.sma(close, period);
-    const upper: number[] = [];
-    const lower: number[] = [];
-
-    for (let i = 0; i < close.length; i++) {
-      if (i < period - 1) {
-        upper.push(NaN);
-        lower.push(NaN);
-      } else {
-        let sumSq = 0;
-        for (let j = 0; j < period; j++) {
-          sumSq += Math.pow(close[i - j] - sma[i], 2);
-        }
-        const std = Math.sqrt(sumSq / period);
-        upper.push(sma[i] + std * stdDev);
-        lower.push(sma[i] - std * stdDev);
-      }
-    }
-
-    return { upper, middle: sma, lower };
-  }
-
-  // Volume-weighted SMA (simple)
-  private vwma(close: number[], volume: number[], period: number): number[] {
-    const result: number[] = [];
-    for (let i = 0; i < close.length; i++) {
-      if (i < period - 1) {
-        result.push(NaN);
-      } else {
-        let sumPV = 0;
-        let sumV = 0;
-        for (let j = 0; j < period; j++) {
-          sumPV += close[i - j] * volume[i - j];
-          sumV += volume[i - j];
-        }
-        result.push(sumPV / sumV);
-      }
-    }
-    return result;
-  }
-
-  // Stochastic Oscillator
-  private stoch(high: number[], low: number[], close: number[], fastK = 14, slowK = 3, slowD = 3): { fastk: number[]; fastd: number[] } {
-    const nLow = this.sma(low, fastK);
-    const nHigh = this.sma(high, fastK); // Actually should use rolling min/max, but sma is not correct
-    // Simplified: use min/max over period
-    const minLow: number[] = [];
-    const maxHigh: number[] = [];
-
-    for (let i = 0; i < low.length; i++) {
-      if (i < fastK - 1) {
-        minLow.push(NaN);
-        maxHigh.push(NaN);
-      } else {
-        let min = low[i];
-        let max = high[i];
-        for (let j = 1; j < fastK; j++) {
-          min = Math.min(min, low[i - j]);
-          max = Math.max(max, high[i - j]);
-        }
-        minLow.push(min);
-        maxHigh.push(max);
-      }
-    }
-
-    const fastk = close.map((c, i) => {
-      if (minLow[i] === maxHigh[i]) return 50;
-      return ((c - minLow[i]) / (maxHigh[i] - minLow[i])) * 100;
-    });
-
-    const fastd = this.sma(fastk, slowD);
-    return { fastk, fastd };
-  }
-
-  override supports(indicator: string): boolean {
-    return ['SMA', 'EMA', 'RSI', 'MACD', 'ATR', 'BBANDS', 'VWMA', 'STOCH'].includes(indicator.toUpperCase());
-  }
-
-  override calculate(indicator: string, data: OHLCV[], params: Record<string, number>): number[] {
-    const name = indicator.toUpperCase();
-    const close = data.map((d) => d.close);
-    const high = data.map((d) => d.high);
-    const low = data.map((d) => d.low);
-    const volume = data.map((d) => d.volume);
-
-    switch (name) {
-      case 'SMA':
-        return this.sma(close, params.timeperiod || 14);
-      case 'EMA':
-        return this.ema(close, params.timeperiod || 14);
-      case 'RSI':
-        return this.rsi(close, params.timeperiod || 14);
-      case 'MACD': {
-        const { macd, signal, histogram } = this.macd(
-          close,
-          params.fastperiod || 12,
-          params.slowperiod || 26,
-          params.signalperiod || 9
-        );
-        // By default return MACD line
-        return { macd: macd, signal: signal, histogram: histogram }[params.output || 'macd'] || macd;
-      }
-      case 'ATR':
-        return this.atr(high, low, close, params.timeperiod || 14);
-      case 'BBANDS': {
-        const { upper, middle, lower } = this.bbands(close, params.timeperiod || 20, params.nbdevup || 2);
-        return { upper, middle, lower }[params.output || 'middle'] || middle;
-      }
-      case 'VWMA':
-        return this.vwma(close, volume, params.timeperiod || 14);
-      case 'STOCH': {
-        const { fastk, fastd } = this.stoch(high, low, close, params.fastk_period || 14, params.slowk_period || 3, params.slowd_period || 3);
-        return typeof params.output === 'string' && params.output === 'fastd' ? fastd : fastk;
-      }
-      default:
-        throw new Error(`Unsupported indicator in JS provider: ${indicator}`);
-    }
-  }
+  return result;
 }
 
-// TA-Lib provider (native)
-class TalibProvider extends IndicatorProvider {
-  private talib: any = null;
+/**
+ * MACD (Moving Average Convergence Divergence)
+ *
+ * @returns { macd: number[], signal: number[], histogram: number[] }
+ */
+export function MACD(
+  close: number[],
+  fastperiod: number = 12,
+  slowperiod: number = 26,
+  signperiod: number = 9
+): { macd: number[]; signal: number[]; histogram: number[] } {
+  const emaFast = EMA(close, fastperiod);
+  const emaSlow = EMA(close, slowperiod);
 
-  private async loadTalib(): Promise<boolean> {
-    if (this.talib) return true;
-    try {
-      // Dynamic import for TA-Lib (if available)
-      this.talib = require('node-talib');
-      return true;
-    } catch (e) {
-      const logger = Logger.getLogger('indicators');
-      logger.warn('TA-Lib not available, falling back to JavaScript implementations');
-      return false;
+  const macdLine: number[] = [];
+  for (let i = 0; i < close.length; i++) {
+    if (emaFast[i] !== emaFast[i] || emaSlow[i] !== emaSlow[i]) { // NaN check
+      macdLine.push(NaN);
+    } else {
+      macdLine.push(emaFast[i] - emaSlow[i]);
     }
   }
 
-  async supports(indicator: string): Promise<boolean> {
-    const loaded = await this.loadTalib();
-    if (!loaded) return false;
-    return typeof this.talib[indicator] === 'function';
+  const signalLine = EMA(macdLine, signperiod);
+
+  const histogram: number[] = [];
+  for (let i = 0; i < macdLine.length; i++) {
+    if (macdLine[i] !== macdLine[i] || signalLine[i] !== signalLine[i]) {
+      histogram.push(NaN);
+    } else {
+      histogram.push(macdLine[i] - signalLine[i]);
+    }
   }
 
-  async calculate(indicator: string, data: OHLCV[], params: Record<string, number>): Promise<number[]> {
-    const loaded = await this.loadTalib();
-    if (!loaded) {
-      throw new Error('TA-Lib not available');
-    }
+  return { macd: macdLine, signal: signalLine, histogram };
+}
 
-    // TA-Lib expects arrays of floats
-    const inReal = data.map((d) => d.close).map(Number);
-    const outReal = new Array(inReal.length);
-    const startIdx = { value: 0 };
-    const endIdx = { value: inReal.length };
+/**
+ * ATR (Average True Range)
+ */
+export function ATR(
+  high: number[],
+  low: number[],
+  close: number[],
+  period: number = 14
+): number[] {
+  if (high.length === 0) return [];
 
-    const indicatorName = indicator.toUpperCase();
-    const talibParams = Object.values(params).map(Number);
+  // First bar's TR is simply high-low (no previous close to compare)
+  const trueRanges: number[] = [high[0] - low[0]];
 
-    const result = this.talib[indicatorName](
-      startIdx,
-      endIdx,
-      inReal,
-      ...talibParams,
-      outReal
+  for (let i = 1; i < high.length; i++) {
+    const tr = Math.max(
+      high[i] - low[i],
+      Math.abs(high[i] - close[i - 1]),
+      Math.abs(low[i] - close[i - 1])
     );
-
-    if (result !== 0) {
-      throw new Error(`TA-Lib calculation failed for ${indicator}: ${result}`);
-    }
-
-    // Convert Buffer/Float64Array to number[]
-    return Array.from(outReal);
+    trueRanges.push(tr);
   }
+
+  return SMA(trueRanges, period);
 }
 
-// Re-export shared OHLCV type from data module (single source of truth)
-export type OHLCV = DataOHLCV;
+/**
+ * Bollinger Bands
+ *
+ * @returns { upper: number[], middle: number[], lower: number[] }
+ */
+export function BollingerBands(
+  close: number[],
+  period: number = 20,
+  stdDev: number = 2
+): { upper: number[]; middle: number[]; lower: number[] } {
+  const middle = SMA(close, period);
+  const upper: number[] = [];
+  const lower: number[] = [];
 
-// Main Indicator Engine
-export class IndicatorEngine {
-  private providers: IndicatorProvider[] = [];
-  private fallbackProvider: JSIndicatorProvider;
-  private logger: any;
+  for (let i = 0; i < close.length; i++) {
+    if (middle[i] !== middle[i]) { // NaN check
+      upper.push(NaN);
+      lower.push(NaN);
+    } else {
+      const slice = close.slice(i - period + 1, i + 1);
+      const mean = middle[i];
+      const variance = slice.reduce((sum, price) => sum + Math.pow(price - mean, 2), 0) / period;
+      const std = Math.sqrt(variance);
 
-  constructor() {
-    this.fallbackProvider = new JSIndicatorProvider();
-    this.providers.push(this.fallbackProvider);
-    this.logger = Logger.getLogger('indicators');
+      upper.push(mean + stdDev * std);
+      lower.push(mean - stdDev * std);
+    }
+  }
 
-    // Try to add TA-Lib provider if available
+  return { upper, middle, lower };
+}
+
+/**
+ * Stochastic Oscillator
+ *
+ * @returns { slowk: number[], slowd: number[] }
+ */
+export function Stochastic(
+  high: number[],
+  low: number[],
+  close: number[],
+  fastkPeriod: number = 14,
+  slowkPeriod: number = 3,
+  slowdPeriod: number = 3
+): { slowk: number[]; slowd: number[] } {
+  const fastk: number[] = [];
+
+  for (let i = 0; i < close.length; i++) {
+    if (i < fastkPeriod - 1) {
+      fastk.push(NaN);
+    } else {
+      const recentHigh = Math.max(...high.slice(i - fastkPeriod + 1, i + 1));
+      const recentLow = Math.min(...low.slice(i - fastkPeriod + 1, i + 1));
+      const range = recentHigh - recentLow;
+      if (range === 0) {
+        fastk.push(50);
+      } else {
+        fastk.push(100 * (close[i] - recentLow) / range);
+      }
+    }
+  }
+
+  const slowk = SMA(fastk, slowkPeriod);
+  const slowd = SMA(slowk, slowdPeriod);
+
+  return { slowk, slowd };
+}
+
+/**
+ * ADX (Average Directional Index)
+ *
+ * Simplified implementation - for production use TA-Lib
+ */
+export function ADX(
+  high: number[],
+  low: number[],
+  close: number[],
+  period: number = 14
+): number[] {
+  // Placeholder: 纯 JS 实现较复杂，这里返回 NaNs
+  // 建议使用 TA-Lib 生产版本
+  logger.warn('ADX JS implementation is simplified, use TA-Lib for production');
+
+  return new Array(close.length).fill(NaN);
+}
+
+/**
+ * OBV (On-Balance Volume)
+ */
+export function OBV(close: number[], volume: number[]): number[] {
+  const result: number[] = [0];
+
+  for (let i = 1; i < close.length; i++) {
+    if (close[i] > close[i - 1]) {
+      result.push(result[i - 1] + volume[i]);
+    } else if (close[i] < close[i - 1]) {
+      result.push(result[i - 1] - volume[i]);
+    } else {
+      result.push(result[i - 1]);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * CCI (Commodity Channel Index)
+ */
+export function CCI(
+  high: number[],
+  low: number[],
+  close: number[],
+  period: number = 14
+): number[] {
+  const typicalPrices: number[] = high.map((h, i) => (h + low[i] + close[i]) / 3);
+  const sma = SMA(typicalPrices, period);
+
+  const result: number[] = [];
+
+  for (let i = 0; i < typicalPrices.length; i++) {
+    if (sma[i] !== sma[i]) { // NaN check
+      result.push(NaN);
+    } else {
+      let meanDev = 0;
+      for (let j = 0; j < period; j++) {
+        meanDev += Math.abs(typicalPrices[i - j] - sma[i]);
+      }
+      meanDev /= period;
+      const cci = (typicalPrices[i] - sma[i]) / (0.015 * meanDev);
+      result.push(isFinite(cci) ? cci : NaN);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * ROC (Rate of Change)
+ */
+export function ROC(close: number[], period: number = 10): number[] {
+  const result: number[] = [];
+
+  for (let i = 0; i < close.length; i++) {
+    if (i < period) {
+      result.push(NaN);
+    } else {
+      const roc = ((close[i] - close[i - period]) / close[i - period]) * 100;
+      result.push(roc);
+    }
+  }
+
+  return result;
+}
+
+// =====================================================
+// TA-Lib Wrapper
+// =====================================================
+
+/**
+ * Normalize input to full IndicatorInput by filling missing arrays with zeros
+ */
+function normalizeInput(inputs: IndicatorInput): Required<IndicatorInput> {
+  const len = inputs.close.length;
+  return {
+    open: inputs.open ?? new Array(len).fill(0),
+    high: inputs.high ?? new Array(len).fill(0),
+    low: inputs.low ?? new Array(len).fill(0),
+    close: inputs.close,
+    volume: inputs.volume ?? new Array(len).fill(0)
+  };
+}
+
+/**
+ * 调用 TA-Lib 原生函数
+ */
+async function callTalib(
+  name: string,
+  inputs: IndicatorInput,
+  params: number[]
+): Promise<number[]> {
+  if (!talibAvailable || !talibModule) {
+    throw new Error('TA-Lib not available');
+  }
+
+  // Normalize inputs to ensure all arrays present
+  const fullInputs = normalizeInput(inputs);
+
+  // @ts-ignore - TA-Lib 类型可能缺失
+  const { read } = talibModule;
+  const indicator = read.lookup(name);
+  if (!indicator) {
+    throw new Error(`TA-Lib indicator '${name}' not found`);
+  }
+
+  const start = Buffer.alloc(4);
+  const output = Buffer.alloc(100000 * 8); // allocate large buffer
+
+  const result = indicator({
+    startIdx: 0,
+    endIdx: fullInputs.close.length - 1,
+    outputSize: output.length,
+    input: [
+      { buffer: Buffer.from(fullInputs.open) },
+      { buffer: Buffer.from(fullInputs.high) },
+      { buffer: Buffer.from(fullInputs.low) },
+      { buffer: Buffer.from(fullInputs.close) },
+      ...(fullInputs.volume && fullInputs.volume.length > 0 ? [{ buffer: Buffer.from(fullInputs.volume) }] : [])
+    ],
+    output: [
+      { buffer: output, offset: start }
+    ],
+    optIn: params
+  });
+
+  if (result !== 0) {
+    throw new Error(`TA-Lib error: ${result}`);
+  }
+
+  // Parse output
+  const outBeg = start.readInt32LE(0);
+  const outNb = output.readInt32LE(0);
+  const values: number[] = [];
+  for (let i = 0; i < outNb; i++) {
+    values.push(output.readDoubleLE(8 * (i + 1)));
+  }
+
+  // Pad with NaNs to match input length
+  const padded = [...Array(outBeg).fill(NaN), ...values];
+  return padded;
+}
+
+// =====================================================
+// High-Level Indicator Wrappers
+// =====================================================
+
+/**
+ * 智能 RSI - 自动选择 TA-Lib 或 JS 实现
+ */
+export async function calculateRSI(
+  close: number[],
+  period: number = 14
+): Promise<number[]> {
+  if (talibAvailable) {
     try {
-      const talib = require('node-talib');
-      if (talib) {
-        this.providers.push(new TalibProvider());
-        this.logger.info('TA-Lib provider initialized');
-      }
-    } catch (e) {
-      // TA-Lib not available, use fallback
+      const result = await callTalib('RSI', { close }, [period]);
+      return result;
+    } catch (error) {
+      logger.warn('TA-Lib RSI failed, falling back to JS', { error: String(error) });
     }
   }
+  return RSI(close, period);
+}
 
-  async calculate(
-    config: IndicatorConfig,
-    data: OHLCV[]
-  ): Promise<{ name: string; values: number[]; index: number }> {
-    const indicatorName = config.function.toUpperCase();
-    const inputArray = this.getInputArray(data, config.input);
-    const { params } = config;
-
-    // Find provider that supports this indicator
-    for (const provider of this.providers) {
-      if (await provider.supports(indicatorName)) {
-        const values = await provider.calculate(indicatorName, data, params);
-        return {
-          name: config.output,
-          values,
-          index: data.length - 1, // Current candle is last index
-        };
-      }
+/**
+ * 智能 MACD
+ */
+export async function calculateMACD(
+  close: number[],
+  fastperiod: number = 12,
+  slowperiod: number = 26,
+  signalperiod: number = 9
+): Promise<{ macd: number[]; signal: number[]; histogram: number[] }> {
+  if (talibAvailable) {
+    try {
+      const result = await callTalib('MACD', { close }, [fastperiod, slowperiod, signalperiod]);
+      // TA-Lib returns interleaved array; would need parsing.
+      // For now fallback to JS to avoid complexity.
+    } catch (error) {
+      logger.warn('TA-Lib MACD failed, falling back');
     }
-
-    throw new Error(`No provider supports indicator: ${indicatorName}`);
   }
+  return MACD(close, fastperiod, slowperiod, signalperiod);
+}
 
-  private getInputArray(data: OHLCV[], input: string): number[] {
-    return data.map((d) => {
-      switch (input) {
-        case 'open': return d.open;
-        case 'high': return d.high;
-        case 'low': return d.low;
-        case 'close': return d.close;
-        case 'volume': return d.volume;
-        default: return d.close;
-      }
-    });
-  }
-
-  async calculateMultiple(configs: IndicatorConfig[], data: OHLCV[]): Promise<Map<string, number[]>> {
-    const results = new Map<string, number[]>();
-
-    // Group by indicator to avoid duplicate calculations
-    const indicatorGroups = new Map<string, IndicatorConfig[]>();
-    for (const config of configs) {
-      const key = config.function.toUpperCase() + JSON.stringify(config.params);
-      if (!indicatorGroups.has(key)) {
-        indicatorGroups.set(key, []);
-      }
-      indicatorGroups.get(key)!.push(config);
+/**
+ * 智能 ATR
+ */
+export async function calculateATR(
+  high: number[],
+  low: number[],
+  close: number[],
+  period: number = 14
+): Promise<number[]> {
+  if (talibAvailable) {
+    try {
+      const result = await callTalib('ATR', { high, low, close }, [period]);
+      return result;
+    } catch (error) {
+      logger.warn('TA-Lib ATR failed, falling back');
     }
-
-    // Calculate each unique indicator once
-    for (const [key, configs] of indicatorGroups) {
-      const config = configs[0]; // All configs in group share same params
-      try {
-        const result = await this.calculate(config, data);
-        for (const cfg of configs) {
-          results.set(cfg.output, result.values);
-        }
-      } catch (error) {
-        this.logger.error(`Failed to calculate ${config.function}: ${error}`);
-        throw error;
-      }
-    }
-
-    return results;
   }
-
-  syncCalculate(config: IndicatorConfig, data: OHLCV[]): { name: string; values: number[]; index: number } {
-    // Synchronous version using only fallback provider (which is sync)
-    if (!this.fallbackProvider.supports(config.function)) {
-      throw new Error(`Indicator not supported in sync mode: ${config.function}`);
-    }
-    const values = this.fallbackProvider.calculate(config.function, data, config.params);
-    return {
-      name: config.output,
-      values,
-      index: data.length - 1,
-    };
-  }
-
-  syncCalculateMultiple(configs: IndicatorConfig[], data: OHLCV[]): Map<string, number[]> {
-    const results = new Map<string, number[]>();
-    for (const config of configs) {
-      try {
-        const result = this.syncCalculate(config, data);
-        results.set(config.output, result.values);
-      } catch (error) {
-        this.logger.error(`Sync calculation failed for ${config.function}: ${error}`);
-        throw error;
-      }
-    }
-    return results;
-  }
-
-  // Compatibility methods for tests and simple usage
-  calculateRSI(data: OHLCV, params: { timeperiod: number }): number[] {
-    const config: IndicatorConfig = {
-      name: 'rsi',
-      function: 'RSI',
-      params,
-      input: 'close',
-      output: 'rsi',
-    };
-    const result = this.syncCalculate(config, [data]); // data as single element array? But syncCalculate expects OHLCV[]
-    // Actually we need to pass array of OHLCV
-    // For compatibility, we treat data as array or single? Let's adapt.
-    return result.values;
-  }
-
-  calculateEMA(data: number[], params: { timeperiod: number }): number[] {
-    const ohlcvArray: OHLCV[] = data.map((close, i) => ({
-      timestamp: i,
-      open: close,
-      high: close,
-      low: close,
-      close,
-      volume: 0,
-    }));
-    const config: IndicatorConfig = {
-      name: 'ema',
-      function: 'EMA',
-      params,
-      input: 'close',
-      output: 'ema',
-    };
-    const result = this.syncCalculateMultiple([config], ohlcvArray);
-    return result.get('ema')!;
-  }
-
-  calculateSMA(data: number[], params: { timeperiod: number }): number[] {
-    const ohlcvArray: OHLCV[] = data.map((close, i) => ({
-      timestamp: i, // placeholder
-      open: close,
-      high: close,
-      low: close,
-      close,
-      volume: 0,
-    }));
-    const config: IndicatorConfig = {
-      name: 'sma',
-      function: 'SMA',
-      params,
-      input: 'close',
-      output: 'sma',
-    };
-    const result = this.syncCalculateMultiple([config], ohlcvArray);
-    return result.get('sma')!;
-  }
-
-  calculateMACD(data: number[], params: { fastperiod: number; slowperiod: number; signalperiod: number }): { macdLine: number[]; signalLine: number[]; histogram: number[] } {
-    const ohlcvArray: OHLCV[] = data.map((close, i) => ({
-      timestamp: i,
-      open: close,
-      high: close,
-      low: close,
-      close,
-      volume: 0,
-    }));
-    const config: IndicatorConfig = {
-      name: 'macd',
-      function: 'MACD',
-      params,
-      input: 'close',
-      output: 'macd_line',
-    };
-    // Note: MACD provider returns macd, signal, histogram but we only get one output per config
-    // So we need to use a special handling
-    // For simplicity, we'll just call the fallback provider directly
-    const values = this.fallbackProvider.calculate('MACD', ohlcvArray, params) as any;
-    return {
-      macdLine: values.macd,
-      signalLine: values.signal,
-      histogram: values.histogram,
-    };
-  }
-
-  calculateATR(data: OHLCV, params: { timeperiod: number }): number[] {
-    const config: IndicatorConfig = {
-      name: 'atr',
-      function: 'ATR',
-      params,
-      input: 'close',
-      output: 'atr',
-    };
-    const result = this.syncCalculate(config, [data]);
-    return result.values;
-  }
-
-  calculateBollingerBands(data: number[], params: { timeperiod: number; nbdevup: number; nbdevdn: number }): { upper: number[]; middle: number[]; lower: number[] } {
-    const ohlcvArray: OHLCV[] = data.map((close, i) => ({
-      timestamp: i,
-      open: close,
-      high: close,
-      low: close,
-      close,
-      volume: 0,
-    }));
-    const config: IndicatorConfig = {
-      name: 'bbands',
-      function: 'BBANDS',
-      params,
-      input: 'close',
-      output: 'bb_upper',
-    };
-    // Fallback BBANDS returns multiple outputs
-    const values = this.fallbackProvider.calculate('BBANDS', ohlcvArray, params) as any;
-    return {
-      upper: values.upper,
-      middle: values.middle,
-      lower: values.lower,
-    };
-  }
+  return ATR(high, low, close, period);
 }
 
-// Singleton instance
-let indicatorEngine: IndicatorEngine | null = null;
+// =====================================================
+// Exports
+// =====================================================
 
-export function getIndicatorEngine(): IndicatorEngine {
-  if (!indicatorEngine) {
-    indicatorEngine = new IndicatorEngine();
-  }
-  return indicatorEngine;
-}
+export const indicators = {
+  SMA,
+  EMA,
+  WMA,
+  RSI,
+  MACD,
+  ATR,
+  BollingerBands,
+  Stochastic,
+  ADX,
+  OBV,
+  CCI,
+  ROC,
+  // Smart wrappers
+  calculateRSI,
+  calculateMACD,
+  calculateATR,
+  // Init
+  initIndicators,
+  isTalibAvailable
+};
 
-// Convenience functions
-export async function calculateIndicator(
-  config: IndicatorConfig,
-  data: OHLCV[]
-): Promise<{ name: string; values: number[]; index: number }> {
-  return getIndicatorEngine().calculate(config, data);
-}
-
-export async function calculateIndicators(
-  configs: IndicatorConfig[],
-  data: OHLCV[]
-): Promise<Map<string, number[]>> {
-  return getIndicatorEngine().calculateMultiple(configs, data);
-}
-
-export function syncCalculateIndicator(
-  config: IndicatorConfig,
-  data: OHLCV[]
-): { name: string; values: number[]; index: number } {
-  return getIndicatorEngine().syncCalculate(config, data);
-}
-
-export function syncCalculateIndicators(
-  configs: IndicatorConfig[],
-  data: OHLCV[]
-): Map<string, number[]> {
-  return getIndicatorEngine().syncCalculateMultiple(configs, data);
-}
+export default indicators;

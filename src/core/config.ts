@@ -1,198 +1,280 @@
 /**
- * OpenClaw Quant Trading - Configuration Management System
- *
- * Supports three-tier configuration priority:
- * 1. Default values (hardcoded)
- * 2. Environment-specific JSON file (configs/{env}.json)
- * 3. Environment variables (OPENCLAW_QUANT_*)
+ * 配置管理系统
+ * 支持多环境配置、环境变量覆盖、热重载
  */
+
+import dotenv from 'dotenv';
+import { readFileSync, existsSync } from 'fs';
+import { join } from 'path';
+
+export type Environment = 'development' | 'testing' | 'production';
 
 export interface ConfigSchema {
   app: {
     name: string;
     version: string;
-    env: 'development' | 'testing' | 'production';
-  };
-  logging: {
-    level: 'error' | 'warn' | 'info' | 'http' | 'verbose' | 'debug';
-    format: 'json' | 'pretty';
-    output: 'console' | 'file' | 'both';
-    logDir: string;
-    maxFiles: number;
-    maxSizeMB: number;
+    environment: Environment;
+    debug: boolean;
   };
   database: {
-    type: 'sqlite' | 'postgresql';
-    path?: string; // For SQLite
-    url?: string; // For PostgreSQL
-    poolMin?: number;
-    poolMax?: number;
+    host: string;
+    port: number;
+    name: string;
+    username?: string;
+    password?: string;
+    pool: {
+      min: number;
+      max: number;
+      acquireTimeout: number;
+      createTimeout: number;
+      destroyTimeout: number;
+      idleTimeout: number;
+      reapInterval: number;
+    };
   };
   redis: {
     host: string;
     port: number;
     password?: string;
     db: number;
+    retryStrategy?: {
+      retries: number;
+      factor: number;
+      minTimeout: number;
+      maxTimeout: number;
+    };
+  };
+  api: {
+    host: string;
+    port: number;
+    cors: {
+      origin: string | string[];
+      credentials: boolean;
+    };
+    rateLimit: {
+      windowMs: number;
+      maxRequests: number;
+    };
+  };
+  logging: {
+    level: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
+    format: 'json' | 'pretty';
+    output: 'console' | 'file' | 'both';
+    filePath?: string;
+    maxFiles: number;
+    maxsize: number;
   };
   exchange: {
-    default: 'binance';
+    default: string;
     timeout: number;
-    enableRateLimit: boolean;
-    maxRetries: number;
+    retries: number;
+    rateLimit: number;
   };
-  strategy: {
-    defaultTimeframe: string;
-    maxIndicators: number;
-    maxOpenTrades: number;
+  backtesting: {
+    defaultStartupCandles: number;
+    maxDataPoints: number;
+    cacheEnabled: boolean;
+    cacheTTL: number;
   };
-  backtest: {
-    defaultFee: number;
-    defaultSlippage: number;
-    dryRun: boolean;
+  risk: {
+    maxPositionSizePercent: number;
+    maxDailyLossPercent: number;
+    maxDrawdownPercent: number;
+    circuitBreakerEnabled: boolean;
   };
   hyperopt: {
-    maxEpochs: number;
+    maxTrials: number;
+    timeout: number;
     nJobs: number;
-    sampler: 'tpe' | 'random' | 'cmaes';
-    pruner: 'hyperband' | 'median' | 'none';
+    earlyStopRounds: number;
   };
 }
 
-export const DefaultConfig: ConfigSchema = {
+const defaultConfig: ConfigSchema = {
   app: {
     name: 'openclaw-quant-trading',
     version: '0.1.0',
-    env: 'development',
-  },
-  logging: {
-    level: 'info',
-    format: 'pretty',
-    output: 'console',
-    logDir: 'logs',
-    maxFiles: 10,
-    maxSizeMB: 10,
+    environment: 'development',
+    debug: true
   },
   database: {
-    type: 'sqlite',
-    path: './data/trades.db',
-    poolMin: 0,
-    poolMax: 10,
+    host: 'localhost',
+    port: 5432,
+    name: 'openclaw_quant',
+    username: 'postgres',
+    password: undefined,
+    pool: {
+      min: 2,
+      max: 10,
+      acquireTimeout: 30000,
+      createTimeout: 30000,
+      destroyTimeout: 5000,
+      idleTimeout: 30000,
+      reapInterval: 1000
+    }
   },
   redis: {
     host: 'localhost',
     port: 6379,
+    password: undefined,
     db: 0,
+    retryStrategy: {
+      retries: 10,
+      factor: 2,
+      minTimeout: 1000,
+      maxTimeout: 30000
+    }
+  },
+  api: {
+    host: '0.0.0.0',
+    port: 8080,
+    cors: {
+      origin: '*',
+      credentials: false
+    },
+    rateLimit: {
+      windowMs: 60000,
+      maxRequests: 100
+    }
+  },
+  logging: {
+    level: 'info',
+    format: 'json',
+    output: 'console',
+    maxFiles: 14,
+    maxsize: 10485760 // 10MB
   },
   exchange: {
     default: 'binance',
     timeout: 30000,
-    enableRateLimit: true,
-    maxRetries: 3,
+    retries: 3,
+    rateLimit: 100
   },
-  strategy: {
-    defaultTimeframe: '5m',
-    maxIndicators: 50,
-    maxOpenTrades: 5,
+  backtesting: {
+    defaultStartupCandles: 200,
+    maxDataPoints: 1000000,
+    cacheEnabled: true,
+    cacheTTL: 3600
   },
-  backtest: {
-    defaultFee: 0.001,
-    defaultSlippage: 0.001,
-    dryRun: true,
+  risk: {
+    maxPositionSizePercent: 0.02,
+    maxDailyLossPercent: 0.05,
+    maxDrawdownPercent: 0.20,
+    circuitBreakerEnabled: true
   },
   hyperopt: {
-    maxEpochs: 100,
-    nJobs: 1,
-    sampler: 'tpe',
-    pruner: 'none',
-  },
+    maxTrials: 100,
+    timeout: 3600,
+    nJobs: 4,
+    earlyStopRounds: 10
+  }
 };
+
+type ConfigProvider = 'env' | 'file' | 'default';
 
 class ConfigManager {
   private config: ConfigSchema;
-  private env: string;
-  private configDir: string;
+  private providers: ConfigProvider[];
+  private loadedFiles: string[] = [];
 
-  constructor(env: string = 'development', configDir: string = 'configs') {
-    this.env = env;
-    this.configDir = configDir;
-    this.config = { ...DefaultConfig };
-    this.load();
+  constructor(env: Environment = 'development') {
+    this.providers = ['default', 'file', 'env'];
+    this.config = this.loadConfig(env);
   }
 
-  private load(): void {
-    // 1. Start with defaults (already in this.config)
+  private loadConfig(env: Environment): ConfigSchema {
+    let config = { ...defaultConfig };
 
-    // 2. Load environment-specific JSON file
-    const configFile = `${this.configDir}/${this.env}.json`;
-    try {
-      const fs = require('fs');
-      const path = require('path');
-      if (fs.existsSync(configFile)) {
-        const raw = fs.readFileSync(configFile, 'utf-8');
-        const envConfig = JSON.parse(raw);
-        this.config = this.deepMerge(this.config, envConfig);
+    config.app.environment = env;
+
+    // 1. 从配置文件加载
+    const configFiles = [
+      `configs/default.json`,
+      `configs/${env}.json`
+    ];
+
+    for (const file of configFiles) {
+      if (existsSync(file)) {
+        try {
+          const fileConfig = JSON.parse(readFileSync(file, 'utf-8'));
+          config = this.deepMerge(config, fileConfig);
+          this.loadedFiles.push(file);
+          console.log(`[Config] Loaded configuration from ${file}`);
+        } catch (error) {
+          console.error(`[Config] Failed to load ${file}:`, error);
+        }
       }
-    } catch (err) {
-      console.warn(`Failed to load config file ${configFile}: ${err.message}`);
     }
 
-    // 3. Override with environment variables
-    this.loadEnvOverrides();
+    // 2. 从环境变量加载（优先级最高）
+    this.loadEnvOverrides(config);
+
+    return config;
   }
 
-  private loadEnvOverrides(): void {
-    const prefix = 'OPENCLAW_QUANT_';
+  private loadEnvOverrides(config: ConfigSchema): void {
+    const ENV_PREFIX = 'OPENCLAW_QUANT_';
+
+    // 辅助函数：通过环境变量路径更新嵌套配置
+    const override = (path: string[], value: string, target: any): boolean => {
+      if (path.length === 1) {
+        const key = path[0];
+        if (value !== undefined && target[key] !== undefined) {
+          const currentType = typeof target[key];
+          if (currentType === 'boolean') {
+            target[key] = value === 'true' || value === '1';
+          } else if (currentType === 'number') {
+            target[key] = parseFloat(value);
+          } else {
+            target[key] = value;
+          }
+          return true;
+        }
+      }
+      return false;
+    };
+
+    // 扫描所有环境变量，匹配 OPENCLAW_QUANT_ 前缀
     for (const [key, value] of Object.entries(process.env)) {
-      if (key.startsWith(prefix)) {
-        const configKey = key.slice(prefix.length).toLowerCase();
-        this.setByPath(configKey, value);
+      if (!key.startsWith(ENV_PREFIX)) continue;
+      if (value === undefined) continue; // skip undefined env values
+
+      const path = key
+        .replace(ENV_PREFIX.toLowerCase(), '')
+        .toLowerCase()
+        .split('_')
+        .filter(Boolean);
+
+      if (path.length === 0) continue;
+
+      // 尝试匹配配置路径，使用 any 以允许动态属性访问
+      let current = config as any;
+      for (let i = 0; i < path.length - 1; i++) {
+        const segment = path[i];
+        if (current[segment] === undefined) break;
+        current = current[segment];
+      }
+
+      const lastKey = path[path.length - 1];
+      if (typeof lastKey === 'undefined') continue;
+      if (override([lastKey], value, current)) {
+        console.log(`[Config] Overridden ${key} from environment`);
       }
     }
-  }
-
-  private setByPath(path: string, value: any): void {
-    const keys = path.split('.');
-    let current: any = this.config;
-    for (let i = 0; i < keys.length - 1; i++) {
-      if (!current[keys[i]]) current[keys[i]] = {};
-      current = current[keys[i]];
-    }
-    const finalKey = keys[keys.length - 1];
-    // Type coercion based on default value
-    const defaultValue = this.getByPath(path);
-    if (defaultValue !== undefined) {
-      const type = typeof defaultValue;
-      if (type === 'number') {
-        value = Number(value);
-      } else if (type === 'boolean') {
-        value = value === 'true';
-      }
-    }
-    current[finalKey] = value;
-  }
-
-  private getByPath(path: string): any {
-    const keys = path.split('.');
-    let current: any = this.config;
-    for (const key of keys) {
-      if (!current) return undefined;
-      current = current[key];
-    }
-    return current;
   }
 
   private deepMerge(target: any, source: any): any {
     const output = { ...target };
     if (this.isObject(target) && this.isObject(source)) {
-      Object.keys(source).forEach((key) => {
+      Object.keys(source).forEach(key => {
         if (this.isObject(source[key])) {
           if (!(key in target)) {
-            Object.assign(output, { [key]: source[key] });
+            output[key] = source[key];
           } else {
             output[key] = this.deepMerge(target[key], source[key]);
           }
         } else {
-          Object.assign(output, { [key]: source[key] });
+          output[key] = source[key];
         }
       });
     }
@@ -203,66 +285,94 @@ class ConfigManager {
     return item && typeof item === 'object' && !Array.isArray(item);
   }
 
-  get(): ConfigSchema {
-    return this.config;
+  /**
+   * 获取完整配置，或指定路径的配置项
+   */
+  get<T>(path?: string): T | ConfigSchema | undefined {
+    if (path === undefined) {
+      return { ...this.config } as T;
+    }
+    const keys = path.split('.');
+    let value: any = this.config;
+    for (const key of keys) {
+      if (value === undefined || value === null) return undefined;
+      value = value[key];
+    }
+    return value as T;
   }
 
-  reload(): void {
-    this.config = { ...DefaultConfig };
-    this.load();
+  // 检查配置是否已从文件加载
+  isLoadedFrom(file: string): boolean {
+    return this.loadedFiles.includes(file);
   }
 
-  validate(): boolean {
-    // Basic validation
-    const c = this.config;
-    if (!c.app.name || !c.app.version) return false;
-    if (c.logging.level && !['error', 'warn', 'info', 'http', 'verbose', 'debug'].includes(c.logging.level)) {
-      return false;
-    }
-    if (c.database.type && !['sqlite', 'postgresql'].includes(c.database.type)) {
-      return false;
-    }
-    if (c.hyperopt.sampler && !['tpe', 'random', 'cmaes'].includes(c.hyperopt.sampler)) {
-      return false;
-    }
-    return true;
+  // 重新加载配置（热重载）
+  reload(env?: Environment): void {
+    const currentEnv = env ?? this.config.app.environment;
+    this.config = this.loadConfig(currentEnv);
+    console.log(`[Config] Configuration reloaded for environment: ${currentEnv}`);
+  }
+
+  // 验证配置必需字段
+  validate(): { valid: boolean; errors: string[] } {
+    const errors: string[] = [];
+
+    // 检查关键配置
+    if (!this.config.database.host) errors.push('database.host is required');
+    if (!this.config.database.name) errors.push('database.name is required');
+    if (!this.config.api.host) errors.push('api.host is required');
+
+    return {
+      valid: errors.length === 0,
+      errors
+    };
   }
 }
 
-// Singleton instance
-let configManager: ConfigManager | null = null;
+// 全局配置实例（懒加载）
+let globalConfig: ConfigManager | null = null;
 
-export function initConfig(env?: string, configDir?: string): ConfigSchema {
-  if (!configManager) {
-    configManager = new ConfigManager(env, configDir);
+/**
+ * 初始化全局配置
+ */
+export function initConfig(env?: Environment): ConfigManager {
+  if (!globalConfig) {
+    // 加载 .env 文件
+    dotenv.config();
+    globalConfig = new ConfigManager(env);
   }
-  return configManager.get();
+  return globalConfig;
 }
 
+/**
+ * 获取全局配置实例
+ */
 export function getConfig(): ConfigSchema {
-  if (!configManager) {
-    throw new Error('Config not initialized. Call initConfig() first.');
+  if (!globalConfig) {
+    initConfig();
   }
-  return configManager.get();
+  return globalConfig!.get<ConfigSchema>()!;
 }
 
-export function getConfigValue<T>(path: string): T {
-  if (!configManager) {
-    throw new Error('Config not initialized. Call initConfig() first.');
+/**
+ * 获取指定配置项
+ */
+export function getConfigValue<T>(path: string): T | undefined {
+  if (!globalConfig) {
+    initConfig();
   }
-  const value = configManager.getByPath(path);
-  if (value === undefined) {
-    throw new Error(`Config path "${path}" does not exist`);
-  }
-  return value as T;
+  return (globalConfig!.get<T>(path) as T | undefined);
 }
 
-export function reloadConfig(): ConfigSchema {
-  if (!configManager) {
-    throw new Error('Config not initialized. Call initConfig() first.');
+/**
+ * 验证配置
+ */
+export function validateConfig(): { valid: boolean; errors: string[] } {
+  if (!globalConfig) {
+    initConfig();
   }
-  configManager.reload();
-  return configManager.get();
+  return globalConfig!.validate();
 }
 
+// Export ConfigManager class; ConfigSchema and Environment are already exported above
 export { ConfigManager };

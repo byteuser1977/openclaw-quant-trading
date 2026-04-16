@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "app": {
+    "name": "test-app",
+    "version": "0.1.0",
+    "environment": "testing",
+    "debug": false
+  },
+  "database": {
+    "host": "test-db",
+    "port": 5432,
+    "name": "test_db",
+    "pool": {
+      "min": 1,
+      "max": 5
+    }
+  }
+}

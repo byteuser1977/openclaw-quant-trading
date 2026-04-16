@@ -1,262 +1,228 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
-
 /**
- * 密钥作用域 - 限制密钥可访问的端点
+ * Vault - 加密凭证存储与安全注入 (Simplified for Phase 2 Sprint 2)
+ *
+ * IronClaw-inspired design:
+ * - Secrets encrypted at rest
+ * - Injected at network boundary (LLM never sees plaintext)
+ * - Allowlist-based endpoint control
+ *
+ * Phase 2 implementation: simplified AES-256-CBC (no GCM for simplicity now)
+ * Will upgrade to GCM in Phase 3 security audit.
  */
+
+import { randomBytes, createCipheriv, createDecipheriv, pbkdf2Sync, createHash } from 'crypto';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { join } from 'path';
+
 export enum SecretScope {
-  /** 仅限交易所 API */
-  EXCHANGE = 'exchange',
-  /** 仅限数据库连接 */
-  DATABASE = 'database',
-  /** 仅限通知服务 */
-  NOTIFICATION = 'notification',
-  /** 全局可用（谨慎使用） */
   GLOBAL = 'global',
+  RESTRICTED = 'restricted',
+  SKILL = 'skill'
 }
 
-/**
- * 加密密钥包装器
- */
 interface EncryptedSecret {
-  ciphertext: string;  // Base64 加密数据
-  iv: string;          // 初始化向量
-  authTag: string;     // GCM 认证标签
-  algorithm: string;   // 算法标识
-}
-
-/**
- * 密钥元数据
- */
-interface SecretMetadata {
-  key: string;
+  ciphertext: string;
+  iv: string;
+  salt: string;
+  algorithm: string;
   scope: SecretScope;
-  allowedPatterns: string[];  // 允许的 URL 模式（wildcard）
-  created_at: number;
-  last_used_at?: number;
-  rotate_after_days?: number;
+  allowedEndpoints?: string[];
 }
 
-/**
- * Vault - 加密密钥管理器
- *
- * 设计目标:
- * 1. LLM 永远无法看到明文密钥
- * 2. 密钥按作用域隔离
- * 3. 仅在网络边界注入（不暴露给策略代码）
- * 4. 支持密钥轮换
- *
- * 参考 IronClaw Encrypted Vault 设计
- */
+export interface VaultConfig {
+  vaultPath: string;
+  masterKeyEnv?: string;
+  masterKey?: string;
+  keepDecryptedInMemory?: boolean;
+}
+
 export class Vault {
-  private secrets: Map<string, { meta: SecretMetadata; encrypted: EncryptedSecret }>;
-  private masterKey: Uint8Array;
-  private keyRotationInterval?: NodeJS.Timeout;
+  private static instance: Vault | null = null;
+  private config: VaultConfig;
+  private secrets: Map<string, EncryptedSecret>;
+  private masterKeyBuffer: Buffer | null = null;
 
-  constructor() {
+  private constructor(config: VaultConfig) {
+    this.config = {
+      keepDecryptedInMemory: false,
+      ...config
+    };
     this.secrets = new Map();
-    const masterKeyHex = process.env.OPENCLAW_QUANT_MASTER_KEY;
-    if (!masterKeyHex) {
-      throw new Error('OPENCLAW_QUANT_MASTER_KEY environment variable is required');
+    this.initializeVault();
+  }
+
+  static getInstance(config?: VaultConfig): Vault {
+    if (!Vault.instance) {
+      if (!config) throw new Error('Vault not initialized');
+      Vault.instance = new Vault(config);
     }
-    this.masterKey = Buffer.from(masterKeyHex, 'hex');
+    return Vault.instance;
   }
 
-  /**
-   * 初始化 Vault - 加载已存储的密钥
-   */
-  async initialize(): Promise<void> {
-    // TODO: 从持久化存储加载加密的密钥元数据
-    // 目前仅内存存储，生产环境需要持久化到文件/数据库
-    console.log('[Vault] Initialized with master key');
+  static init(config: VaultConfig): Vault {
+    if (!Vault.instance) {
+      Vault.instance = new Vault(config);
+    }
+    return Vault.instance;
   }
 
-  /**
-   * 存储密钥（加密）
-   */
-  async store(
-    key: string,
-    plaintext: string,
-    scope: SecretScope,
-    options: {
-      allowedPatterns?: string[];
-      rotateAfterDays?: number;
-    } = {}
-  ): Promise<void> {
-    // 生成随机 IV
-    const iv = randomBytes(12);
+  private initializeVault(): void {
+    const vaultPath = this.config.vaultPath;
+
+    if (existsSync(vaultPath)) {
+      const data = readFileSync(vaultPath, 'utf-8');
+      const encryptedList: EncryptedSecret[] = JSON.parse(data);
+      encryptedList.forEach(enc => {
+        this.secrets.set(this.hashKey(enc.ciphertext), enc);
+      });
+      console.log(`[Vault] Loaded ${this.secrets.size} secrets`);
+    } else {
+      this.ensureDir(vaultPath);
+      writeFileSync(vaultPath, '[]', 'utf-8');
+      console.log(`[Vault] Created new vault`);
+    }
+
+    this.deriveMasterKey();
+  }
+
+  private ensureDir(filePath: string): void {
+    const dir = require('path').dirname(filePath);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  }
+
+  private deriveMasterKey(): void {
+    let source = this.config.masterKey || (this.config.masterKeyEnv && process.env[this.config.masterKeyEnv!]);
+    if (!source) throw new Error('Vault: master key not provided');
+
+    // Use PBKDF2 to derive 32-byte key
+    this.masterKeyBuffer = pbkdf2Sync(source, 'openclaw-quant-salt', 100000, 32, 'sha256');
+    console.log('[Vault] Master key derived');
+  }
+
+  private hashKey(secret: string): string {
+    return createHash('sha256').update(secret).digest('hex').substring(0, 16);
+  }
+
+  private encrypt(plaintext: string): { ciphertext: string; iv: string } {
+    if (!this.masterKeyBuffer) throw new Error('Vault: master key not initialized');
+
+    const iv = randomBytes(16); // CBC mode 需要 16 bytes IV
+    const cipher = createCipheriv('aes-256-cbc', this.masterKeyBuffer, iv);
     
-    // AES-256-GCM 加密
-    const cipher = createCipheriv('aes-256-gcm', this.masterKey, iv);
-    let ciphertext = cipher.update(plaintext, 'utf8', 'base64');
-    ciphertext += cipher.final('base64');
-    const authTag = cipher.getAuthTag();
+    let encrypted = cipher.update(plaintext, 'utf8', 'base64');
+    encrypted += cipher.final('base64');
 
-    const encryptedSecret: EncryptedSecret = {
-      ciphertext,
-      iv: iv.toString('hex'),
-      authTag: authTag.toString('hex'),
-      algorithm: 'AES-256-GCM',
+    return {
+      ciphertext: encrypted,
+      iv: iv.toString('base64')
     };
-
-    const meta: SecretMetadata = {
-      key,
-      scope,
-      allowedPatterns: options.allowedPatterns ?? [],
-      created_at: Date.now(),
-      rotate_after_days: options.rotateAfterDays ?? 30,
-    };
-
-    this.secrets.set(key, { meta, encrypted: encryptedSecret });
-    
-    // TODO: 持久化到存储
-    console.log(`[Vault] Stored secret: ${key} (scope: ${scope})`);
   }
 
-  /**
-   * 解密并获取密钥（仅在允许的上下文中）
-   */
-  async decrypt(
-    key: string,
-    context: {
-      url?: string;      // 当前请求的 URL（用于作用域检查）
-      purpose: string;   // 使用目的（审计用）
-    }
-  ): Promise<string> {
-    const entry = this.secrets.get(key);
-    if (!entry) {
-      throw new Error(`Secret ${key} not found in vault`);
-    }
+  private decrypt(ciphertextB64: string, ivB64: string): string {
+    if (!this.masterKeyBuffer) throw new Error('Vault: master key not initialized');
 
-    // 检查作用域
-    if (context.url && entry.meta.allowedPatterns.length > 0) {
-      const allowed = this.matchPatterns(context.url, entry.meta.allowedPatterns);
-      if (!allowed) {
-        throw new Error(`Secret ${key} not allowed for URL: ${context.url}`);
-      }
-    }
-
-    // 解密
-    const iv = Buffer.from(entry.encrypted.iv, 'hex');
-    const authTag = Buffer.from(entry.encrypted.authTag, 'hex');
-    const decipher = createDecipheriv('aes-256-gcm', this.masterKey, iv);
-    decipher.setAuthTag(authTag);
+    const iv = Buffer.from(ivB64, 'base64');
+    const decipher = createDecipheriv('aes-256-cbc', this.masterKeyBuffer, iv);
     
-    let decrypted = decipher.update(entry.encrypted.ciphertext, 'base64', 'utf8');
+    let decrypted = decipher.update(ciphertextB64, 'base64', 'utf8');
     decrypted += decipher.final('utf8');
-
-    // 更新使用记录
-    entry.meta.last_used_at = Date.now();
-
-    console.log(`[Vault] Decrypted secret: ${key} (purpose: ${context.purpose})`);
+    
     return decrypted;
   }
 
-  /**
-   * 删除密钥
-   */
-  async delete(key: string): Promise<boolean> {
-    const deleted = this.secrets.delete(key);
-    if (deleted) {
-      console.log(`[Vault] Deleted secret: ${key}`);
-      // TODO: 从持久化存储删除
+  async store(key: string, value: string, scope: SecretScope = SecretScope.GLOBAL, allowedEndpoints?: string[]): Promise<void> {
+    if (this.secrets.has(key)) {
+      throw new Error(`Vault: Secret "${key}" already exists`);
     }
-    return deleted;
+
+    const { ciphertext, iv } = this.encrypt(value);
+    const salt = randomBytes(16).toString('base64');
+
+    const encrypted: EncryptedSecret = {
+      ciphertext,
+      iv,
+      salt,
+      algorithm: 'aes-256-cbc',
+      scope,
+      ...(scope === SecretScope.RESTRICTED && allowedEndpoints ? { allowedEndpoints } : {})
+    };
+
+    this.secrets.set(key, encrypted); // 使用 key 作为索引 (简化)
+    await this.persist();
+    console.log(`[Vault] Stored secret: ${key}`);
   }
 
-  /**
-   * 列出所有密钥（仅元数据，不解密）
-   */
-  listKeys(): SecretMetadata[] {
-    return Array.from(this.secrets.values()).map(entry => entry.meta);
+  async retrieve(key: string): Promise<string> {
+    const enc = this.secrets.get(key);
+    if (!enc) throw new Error(`Vault: Secret "${key}" not found`);
+    return this.decrypt(enc.ciphertext, enc.iv);
   }
 
-  /**
-   * 检查密钥是否需要轮换
-   */
-  needsRotation(key: string): boolean {
-    const entry = this.secrets.get(key);
-    if (!entry) return false;
-    const { created_at, rotate_after_days } = entry.meta;
-    if (!rotate_after_days) return false;
-    const ageDays = (Date.now() - created_at) / (1000 * 60 * 60 * 24);
-    return ageDays >= rotate_after_days;
-  }
+  async inject(key: string, request: { setAuthHeader?: (k: string, v: string) => void }, endpoint?: string): Promise<void> {
+    const enc = this.secrets.get(key);
+    if (!enc) throw new Error(`Vault: Secret "${key}" not found`);
 
-  /**
-   * 轮换密钥（删除旧密钥，存储新密钥）
-   */
-  async rotate(
-    key: string,
-    newPlaintext: string,
-    options?: { allowedPatterns?: string[]; rotateAfterDays?: number }
-  ): Promise<void> {
-    console.log(`[Vault] Rotating secret: ${key}`);
-    await this.delete(key);
-    await this.store(key, newPlaintext, SecretScope.GLOBAL, options);
-  }
-
-  /**
-   * 启动自动轮换任务
-   */
-  startAutoRotation(intervalHours: number = 24): void {
-    this.keyRotationInterval = setInterval(async () => {
-      for (const [key] of this.secrets) {
-        if (this.needsRotation(key)) {
-          console.warn(`[Vault] Secret ${key} needs rotation`);
-          // TODO: 触发告警或自动调用 rotate API
-        }
+    if (enc.scope === SecretScope.RESTRICTED && endpoint) {
+      const allowed = enc.allowedEndpoints || [];
+      const isAllowed = allowed.some(pattern => this.matchUrl(pattern, endpoint));
+      if (!isAllowed) {
+        throw new Error(`Vault: Endpoint "${endpoint}" not allowed for secret "${key}"`);
       }
-    }, intervalHours * 60 * 60 * 1000);
-  }
+    }
 
-  /**
-   * 停止自动轮换
-   */
-  stopAutoRotation(): void {
-    if (this.keyRotationInterval) {
-      clearInterval(this.keyRotationInterval);
+    const value = this.decrypt(enc.ciphertext, enc.iv);
+
+    if (request.setAuthHeader) {
+      request.setAuthHeader('Authorization', `Bearer ${value}`);
+    } else if ((request as any).headers) {
+      (request as any).headers['Authorization'] = `Bearer ${value}`;
+    } else {
+      throw new Error('Vault: Request must have setAuthHeader or headers');
     }
   }
 
-  /**
-   * URL 模式匹配（支持 wildcard）
-   */
-  private matchPatterns(url: string, patterns: string[]): boolean {
-    return patterns.some(pattern => {
-      // 简单 wildcard 匹配：* 匹配任意字符序列
-      const regex = new RegExp('^' + pattern.replace(/\*/g, '.*').replace(/\?/g, '.') + '$');
-      return regex.test(url);
+  private matchUrl(pattern: string, url: string): boolean {
+    let regex = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+                       .replace(/\*/g, '[^/?]+')
+                       .replace(/\*\*/g, '.*')
+                       .replace(/\?/g, '.');
+    regex = `^${regex}$`;
+    return new RegExp(regex).test(url);
+  }
+
+  async rotate(key: string, newValue: string): Promise<void> {
+    if (!this.secrets.has(key)) throw new Error(`Vault: Secret "${key}" not found`);
+    await this.store(key, newValue, this.secrets.get(key)!.scope, this.secrets.get(key)!.allowedEndpoints);
+  }
+
+  async delete(key: string): Promise<void> {
+    if (!this.secrets.delete(key)) throw new Error(`Vault: Secret "${key}" not found`);
+    await this.persist();
+  }
+
+  list(): Array<{ key: string; scope: SecretScope; allowedEndpoints?: string[] }> {
+    return Array.from(this.secrets.keys()).map(k => {
+      const enc = this.secrets.get(k)!;
+      return { key: k, scope: enc.scope, allowedEndpoints: enc.allowedEndpoints };
     });
   }
 
-  /**
-   * 导出 Vault 状态（用于调试）
-   */
-  exportStatus(): { keyCount: number; keys: SecretMetadata[] } {
-    return {
-      keyCount: this.secrets.size,
-      keys: this.listKeys(),
-    };
+  private async persist(): Promise<void> {
+    const list = Array.from(this.secrets.values());
+    writeFileSync(this.config.vaultPath, JSON.stringify(list, null, 2), 'utf-8');
   }
-}
 
-/**
- * 全局 Vault 实例（单例）
- */
-let globalVault: Vault | null = null;
-
-export async function initVault(): Promise<Vault> {
-  if (!globalVault) {
-    globalVault = new Vault();
-    await globalVault.initialize();
-    globalVault.startAutoRotation(24);
+  clearMemory(): void {
+    if (this.masterKeyBuffer) {
+      this.masterKeyBuffer.fill(0);
+      this.masterKeyBuffer = null;
+    }
   }
-  return globalVault;
 }
 
 export function getVault(): Vault {
-  if (!globalVault) {
-    throw new Error('Vault not initialized. Call initVault() first.');
-  }
-  return globalVault;
+  const vaultPath = process.env.OPENCLAW_QUANT_VAULT_PATH || join(process.env.HOME || '.', '.openclaw', 'vault.json');
+  const masterKey = process.env.OPENCLAW_QUANT_VAULT_KEY;
+  if (!masterKey) throw new Error('Vault: OPENCLAW_QUANT_VAULT_KEY required');
+  return Vault.init({ vaultPath, masterKey, keepDecryptedInMemory: false });
 }

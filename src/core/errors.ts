@@ -1,392 +1,441 @@
 /**
- * OpenClaw Quant Trading - Error Handling Framework
- *
- * Provides:
- * - Error categorization (9 categories)
- * - Base Error class with retryable flag
- * - Specific error classes
- * - @retry decorator with exponential backoff
- * - Circuit Breaker pattern
+ * 统一错误处理框架
+ * 定义错误类别、重试策略、熔断保护
  */
 
+/**
+ * 错误类别枚举
+ * 对应 API 规范中的错误码范围
+ */
 export enum ErrorCategory {
-  VALIDATION = 'VALIDATION',
-  STRATEGY = 'STRATEGY',
-  DATABASE = 'DATABASE',
-  EXCHANGE = 'EXCHANGE',
-  NETWORK = 'NETWORK',
-  FILE = 'FILE',
-  INTERNAL = 'INTERNAL',
-  AUTH = 'AUTH',
-  UNKNOWN = 'UNKNOWN',
+  VALIDATION = 1,       // 参数错误 (1000-1999)
+  STRATEGY = 3,         // 策略错误 (3000-3999)
+  DATABASE = 4,         // 数据库错误 (4000-4999)
+  EXCHANGE = 5,         // 交易所错误 (5000-5999)
+  NETWORK = 6,          // 网络错误 (6000-6999)
+  FILE = 7,             // 文件错误 (7000-7999)
+  INTERNAL = 8,         // 内部错误 (8000-8999)
+  AUTH = 9,             // 认证错误 (9000-9999)
+  UNKNOWN = 9999        // 未知错误
 }
 
-export interface ErrorOptions {
-  category?: ErrorCategory;
-  code?: string;
-  message?: string;
-  retryable?: boolean;
-  details?: Record<string, any>;
-  cause?: Error;
+/**
+ * 重试策略
+ */
+export enum RetryStrategy {
+  NONE = 'none',
+  FIXED = 'fixed',
+  EXPONENTIAL = 'exponential'
 }
 
+/**
+ * 自定义异常基类
+ */
 export class OpenClawError extends Error {
   public readonly category: ErrorCategory;
-  public readonly code: string;
+  public readonly code: number;
   public readonly retryable: boolean;
-  public readonly details: Record<string, any> | null;
-  public readonly timestamp: Date;
+  public readonly details?: any;
 
   constructor(
     message: string,
-    options: ErrorOptions = {}
+    category: ErrorCategory = ErrorCategory.UNKNOWN,
+    code: number = 9999,
+    retryable: boolean = false,
+    details?: any
   ) {
     super(message);
     this.name = this.constructor.name;
-    this.category = options.category ?? ErrorCategory.UNKNOWN;
-    this.code = options.code ?? 'UNKNOWN';
-    this.retryable = options.retryable ?? false;
-    this.details = options.details ?? null;
-    this.timestamp = new Date();
+    this.category = category;
+    this.code = code;
+    this.retryable = retryable;
+    this.details = details;
 
-    // Maintains proper stack trace (only available in V8)
+    // 保持正确的堆栈追踪（仅 V8）
     if (Error.captureStackTrace) {
       Error.captureStackTrace(this, this.constructor);
     }
   }
+
+  toJSON() {
+    return {
+      name: this.name,
+      message: this.message,
+      category: this.category,
+      code: this.code,
+      retryable: this.retryable,
+      details: this.details,
+      stack: this.stack
+    };
+  }
+
+  toString(): string {
+    return `${this.name}[${this.code}]: ${this.message}`;
+  }
 }
 
-// Validation errors (1xxx)
+// =====================================================
+// 具体异常类（按类别）
+// =====================================================
+
+/**
+ * 参数验证错误
+ */
 export class ValidationError extends OpenClawError {
-  constructor(message: string, details?: Record<string, any>) {
-    super(message, {
-      category: ErrorCategory.VALIDATION,
-      code: '1000',
-      retryable: false,
-      details,
+  constructor(
+    message: string,
+    field?: string,
+    value?: any,
+    constraints?: Record<string, string>
+  ) {
+    super(message, ErrorCategory.VALIDATION, 1001, false, {
+      field,
+      value,
+      constraints
     });
+    this.name = 'ValidationError';
   }
 }
 
-// Strategy errors (3xxx)
+/**
+ * 策略错误
+ */
 export class StrategyError extends OpenClawError {
-  constructor(message: string, details?: Record<string, any>, retryable = false) {
-    super(message, {
-      category: ErrorCategory.STRATEGY,
-      code: '3000',
-      retryable,
-      details,
-    });
+  constructor(
+    message: string,
+    code: number = 3001,
+    details?: any
+  ) {
+    super(message, ErrorCategory.STRATEGY, code, false, details);
+    this.name = 'StrategyError';
   }
 }
 
-// Database errors (4xxx)
+/**
+ * 数据库错误
+ */
 export class DatabaseError extends OpenClawError {
-  constructor(message: string, details?: Record<string, any>, retryable = true) {
-    super(message, {
-      category: ErrorCategory.DATABASE,
-      code: '4000',
-      retryable,
-      details,
-    });
+  constructor(
+    message: string,
+    code: number = 4001,
+    retryable: boolean = true,
+    details?: any
+  ) {
+    super(message, ErrorCategory.DATABASE, code, retryable, details);
+    this.name = 'DatabaseError';
   }
 }
 
-// Exchange errors (5xxx)
+/**
+ * 交易所错误
+ */
 export class ExchangeError extends OpenClawError {
-  constructor(message: string, details?: Record<string, any>) {
-    super(message, {
-      category: ErrorCategory.EXCHANGE,
-      code: '5000',
-      retryable: true,
-      details,
-    });
+  constructor(
+    message: string,
+    code: number = 5001,
+    retryable: boolean = true,
+    details?: any
+  ) {
+    super(message, ErrorCategory.EXCHANGE, code, retryable, details);
+    this.name = 'ExchangeError';
   }
 }
 
-// Network errors (2xxx)
+/**
+ * 网络错误
+ */
 export class NetworkError extends OpenClawError {
-  constructor(message: string, details?: Record<string, any>) {
-    super(message, {
-      category: ErrorCategory.NETWORK,
-      code: '2000',
-      retryable: true,
-      details,
-    });
+  constructor(
+    message: string,
+    code: number = 6001,
+    retryable: boolean = true,
+    cause?: Error
+  ) {
+    super(message, ErrorCategory.NETWORK, code, retryable, { cause });
+    this.name = 'NetworkError';
   }
 }
 
-// File errors (6xxx)
+/**
+ * 文件错误
+ */
 export class FileError extends OpenClawError {
-  constructor(message: string, details?: Record<string, any>) {
-    super(message, {
-      category: ErrorCategory.FILE,
-      code: '6000',
-      retryable: false,
-      details,
-    });
+  constructor(
+    message: string,
+    code: number = 7001,
+    retryable: boolean = false,
+    details?: any
+  ) {
+    super(message, ErrorCategory.FILE, code, retryable, details);
+    this.name = 'FileError';
   }
 }
 
-// Authentication errors (7xxx)
+/**
+ * 认证错误
+ */
 export class AuthError extends OpenClawError {
-  constructor(message: string, details?: Record<string, any>) {
-    super(message, {
-      category: ErrorCategory.AUTH,
-      code: '7000',
-      retryable: false,
-      details,
-    });
+  constructor(
+    message: string,
+    code: number = 9001,
+    details?: any
+  ) {
+    super(message, ErrorCategory.AUTH, code, false, details);
+    this.name = 'AuthError';
   }
 }
 
-// Config errors (8xxx)
+/**
+ * 配置错误
+ */
 export class ConfigError extends OpenClawError {
-  constructor(message: string, details?: Record<string, any>) {
-    super(message, {
-      category: ErrorCategory.INTERNAL,
-      code: '8000',
-      retryable: false,
-      details,
-    });
+  constructor(
+    message: string,
+    field?: string,
+    details?: any
+  ) {
+    super(message, ErrorCategory.VALIDATION, 1002, false, { field, details });
+    this.name = 'ConfigError';
   }
 }
 
-// Retry decorator
+// =====================================================
+// 重试装饰器
+// =====================================================
+
 export interface RetryOptions {
-  maxAttempts?: number;
-  backoffMs?: number;
-  backoffStrategy?: 'linear' | 'exponential' | 'fixed';
-  jitter?: boolean;
-  onRetry?: (attempt: number, error: Error) => void;
+  maxRetries?: number;
+  strategy?: RetryStrategy;
+  baseDelayMs?: number;
+  maxDelayMs?: number;
+  retryableErrors?: (new (...args: any[]) => OpenClawError)[];
+  onRetry?: (attempt: number, error: OpenClawError) => void;
 }
 
-export function retry(
+/**
+ * 重试装饰器
+ * 自动重试可重试错误
+ */
+export function retry<T extends (...args: any[]) => Promise<any>>(
   options: RetryOptions = {}
-): <T extends (...args: any[]) => Promise<any>>(target: T, propertyKey: string, descriptor: PropertyDescriptor) => void {
+): MethodDecorator {
   const {
-    maxAttempts = 3,
-    backoffMs = 1000,
-    backoffStrategy = 'exponential',
-    jitter = true,
-    onRetry,
+    maxRetries = 3,
+    strategy = RetryStrategy.EXPONENTIAL,
+    baseDelayMs = 1000,
+    maxDelayMs = 30000,
+    retryableErrors = [NetworkError, ExchangeError, DatabaseError],
+    onRetry
   } = options;
 
-  return function (
-    target: any,
-    propertyKey: string,
-    descriptor: PropertyDescriptor
-  ) {
+  return function (target: any, propertyKey: string | symbol, descriptor: PropertyDescriptor) {
     const originalMethod = descriptor.value;
 
     descriptor.value = async function (...args: any[]) {
       let lastError: Error | null = null;
+      let attempt = 0;
 
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      while (attempt <= maxRetries) {
         try {
           return await originalMethod.apply(this, args);
-        } catch (error) {
-          lastError = error as Error;
+        } catch (error: any) {  // <-- 使用 any 避免 unknown 类型冲突
+          lastError = error;
 
-          // Only retry if the error is retryable
-          const openClawError = error instanceof OpenClawError;
-          const shouldRetry = !openClawError || (error as OpenClawError).retryable;
+          // 检查是否是可重试错误
+          const isRetryable = retryableErrors.some(ErrorClass =>
+            error instanceof ErrorClass
+          );
 
-          if (!shouldRetry || attempt === maxAttempts) {
+          if (!isRetryable || attempt >= maxRetries) {
             throw error;
           }
 
-          // Calculate backoff
+          attempt++;
+
+          // 计算重试延迟
           let delayMs: number;
-          switch (backoffStrategy) {
-            case 'linear':
-              delayMs = backoffMs * attempt;
+          switch (strategy) {
+            case RetryStrategy.FIXED:
+              delayMs = baseDelayMs;
               break;
-            case 'exponential':
-              delayMs = backoffMs * Math.pow(2, attempt - 1);
+            case RetryStrategy.EXPONENTIAL:
+              delayMs = Math.min(baseDelayMs * Math.pow(2, attempt - 1), maxDelayMs);
               break;
-            case 'fixed':
             default:
-              delayMs = backoffMs;
+              delayMs = 0;
           }
 
-          // Add jitter to avoid thundering herd
-          if (jitter) {
-            delayMs = delayMs * (0.75 + Math.random() * 0.5);
+          // 添加抖动（避免惊群）
+          if (delayMs > 0) {
+            const jitter = Math.random() * 0.1 * delayMs;
+            delayMs += jitter;
           }
 
-          if (onRetry) {
-            onRetry(attempt, error as Error);
+          // 通知回调
+          if (onRetry && error instanceof OpenClawError) {
+            onRetry(attempt, error);
           }
 
-          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          await new Promise(resolve => setTimeout(resolve, delayMs));
         }
       }
 
       throw lastError;
     };
+
+    return descriptor;
   };
 }
 
-// Circuit Breaker
-export type CircuitState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+// =====================================================
+// 熔断器（Circuit Breaker）
+// =====================================================
 
-export interface CircuitBreakerConfig {
-  failureThreshold: number; // Number of consecutive failures to trip
-  resetTimeoutMs: number;   // Time in ms before attempting to close again
-  halfOpenMaxCalls: number; // Number of test calls in HALF_OPEN state
+export interface CircuitBreakerOptions {
+  failureThreshold: number;      // 失败阈值（连续失败次数）
+  resetTimeoutMs: number;        // 重置超时（毫秒）
+  halfOpenMaxCalls: number;      // 半开状态下最大调用次数
 }
 
 export class CircuitBreaker {
-  private state: CircuitState = 'CLOSED';
-  private failureCount: number = 0;
+  private failures: number = 0;
+  private state: 'CLOSED' | 'OPEN' | 'HALF_OPEN' = 'CLOSED';
   private lastFailureTime: number = 0;
-  private config: Required<CircuitBreakerConfig>;
+  private options: Required<CircuitBreakerOptions>;
 
-  private static instanceCount = 0;
-  private readonly instanceId: number;
-
-  constructor(config: CircuitBreakerConfig) {
-    this.config = {
-      ...config,
-      failureThreshold: config.failureThreshold ?? 5,
-      resetTimeoutMs: config.resetTimeoutMs ?? 60000,
-      halfOpenMaxCalls: config.halfOpenMaxCalls ?? 3,
-    } as Required<CircuitBreakerConfig>;
-    this.instanceId = ++CircuitBreaker.instanceCount;
+  constructor(options: CircuitBreakerOptions) {
+    this.options = Object.assign(
+      {
+        failureThreshold: 5,
+        resetTimeoutMs: 60000,
+        halfOpenMaxCalls: 3
+      },
+      options
+    );
   }
 
-  async execute<T>(
-    fn: () => Promise<T>,
-    fallback?: (error: Error) => Promise<T> | T
-  ): Promise<T> {
-    const now = Date.now();
-
-    // Check if we should transition out of OPEN state
+  async execute<T>(fn: () => Promise<T>): Promise<T> {
     if (this.state === 'OPEN') {
-      if (now - this.lastFailureTime >= this.config.resetTimeoutMs) {
+      if (Date.now() - this.lastFailureTime > this.options.resetTimeoutMs) {
         this.state = 'HALF_OPEN';
-        this.failureCount = 0;
+        this.failures = 0;
       } else {
-        if (fallback) {
-          return fallback(new Error('Circuit breaker is OPEN'));
-        }
-        throw new Error('Circuit breaker is OPEN');
-      }
-    }
-
-    // HALF_OPEN: allow limited test calls
-    if (this.state === 'HALF_OPEN') {
-      if (this.failureCount >= this.config.halfOpenMaxCalls) {
-        if (fallback) {
-          return fallback(new Error('Circuit breaker in HALF_OPEN, too many test failures'));
-        }
-        throw new Error('Circuit breaker in HALF_OPEN, too many test failures');
+        throw new OpenClawError(
+          'Circuit breaker is OPEN',
+          ErrorCategory.INTERNAL,
+          8001,
+          false,
+          { state: this.state }
+        );
       }
     }
 
     try {
       const result = await fn();
 
-      // Success: reset circuit breaker
-      if (this.state !== 'CLOSED') {
+      if (this.state === 'HALF_OPEN') {
         this.state = 'CLOSED';
-        this.failureCount = 0;
+        this.failures = 0;
       }
 
       return result;
     } catch (error) {
-      this.failureCount++;
-      this.lastFailureTime = now;
+      this.failures++;
+      this.lastFailureTime = Date.now();
 
-      // Trip the circuit if threshold reached
-      if (this.failureCount >= this.config.failureThreshold) {
+      if (this.failures >= this.options.failureThreshold) {
         this.state = 'OPEN';
       }
 
-      if (fallback) {
-        return fallback(error as Error);
+      if (error instanceof OpenClawError) {
+        throw error;
       }
-      throw error;
+      throw new OpenClawError(
+        error instanceof Error ? error.message : 'Unknown error',
+        ErrorCategory.INTERNAL,
+        8002,
+        false,
+        { cause: error }
+      );
     }
   }
 
-  getState(): CircuitState {
+  getState(): string {
     return this.state;
   }
 
-  getFailureCount(): number {
-    return this.failureCount;
-  }
-
-  isClosed(): boolean {
-    return this.state === 'CLOSED';
-  }
-
-  isOpen(): boolean {
-    return this.state === 'OPEN';
+  reset(): void {
+    this.state = 'CLOSED';
+    this.failures = 0;
+    this.lastFailureTime = 0;
   }
 }
 
-// Error wrapping utility
-export function wrapError(error: any, category: ErrorCategory, code: string, message?: string): OpenClawError {
+// =====================================================
+// 错误处理工具函数
+// =====================================================
+
+/**
+ * 安全的错误包装
+ */
+export function wrapError(
+  error: unknown,
+  defaultMessage: string = 'An unexpected error occurred'
+): OpenClawError {
   if (error instanceof OpenClawError) {
     return error;
   }
 
-  const wrapped = new OpenClawError(message || error.message, {
-    category,
-    code,
-    retryable: category === ErrorCategory.NETWORK || category === ErrorCategory.DATABASE || category === ErrorCategory.EXCHANGE,
-    details: { original: error },
-  });
-
-  // Preserve stack trace
-  if (error.stack) {
-    wrapped.stack = error.stack;
+  if (error instanceof Error) {
+    return new OpenClawError(
+      error.message,
+      ErrorCategory.INTERNAL,
+      8999,
+      false,
+      { originalError: error.name, stack: error.stack }
+    );
   }
 
-  return wrapped;
+  return new OpenClawError(
+    defaultMessage,
+    ErrorCategory.INTERNAL,
+    8999,
+    false,
+    { original: error }
+  );
 }
 
-// Error code mapping
-export const ERROR_MAP: Record<string, ErrorCategory> = {
-  // Validation (1xxx)
-  '1000': ErrorCategory.VALIDATION,
-  '1001': ErrorCategory.VALIDATION,
-  '1002': ErrorCategory.VALIDATION,
-  // Network (2xxx)
-  '2000': ErrorCategory.NETWORK,
-  '2001': ErrorCategory.NETWORK,
-  '2002': ErrorCategory.NETWORK,
-  // Strategy (3xxx)
-  '3000': ErrorCategory.STRATEGY,
-  '3001': ErrorCategory.STRATEGY,
-  '3002': ErrorCategory.STRATEGY,
-  // Database (4xxx)
-  '4000': ErrorCategory.DATABASE,
-  '4001': ErrorCategory.DATABASE,
-  '4002': ErrorCategory.DATABASE,
-  // Exchange (5xxx)
-  '5000': ErrorCategory.EXCHANGE,
-  '5001': ErrorCategory.EXCHANGE,
-  '5002': ErrorCategory.EXCHANGE,
-  // File (6xxx)
-  '6000': ErrorCategory.FILE,
-  '6001': ErrorCategory.FILE,
-  '6002': ErrorCategory.FILE,
-  // Auth (7xxx)
-  '7000': ErrorCategory.AUTH,
-  '7001': ErrorCategory.AUTH,
-  '7002': ErrorCategory.AUTH,
-  // Internal (8xxx)
-  '8000': ErrorCategory.INTERNAL,
-  '8001': ErrorCategory.INTERNAL,
-  '8002': ErrorCategory.INTERNAL,
-  // Unknown (9xxx)
-  '9000': ErrorCategory.UNKNOWN,
+/**
+ * 错误分类映射
+ */
+export const ERROR_MAP: Record<number, { category: ErrorCategory; defaultMessage: string }> = {
+  // 验证错误
+  1001: { category: ErrorCategory.VALIDATION, defaultMessage: 'Validation failed' },
+  1002: { category: ErrorCategory.VALIDATION, defaultMessage: 'Configuration error' },
+
+  // 策略错误
+  3001: { category: ErrorCategory.STRATEGY, defaultMessage: 'Strategy error' },
+  3002: { category: ErrorCategory.STRATEGY, defaultMessage: 'Indicator calculation failed' },
+
+  // 数据库错误
+  4001: { category: ErrorCategory.DATABASE, defaultMessage: 'Database operation failed' },
+  4002: { category: ErrorCategory.DATABASE, defaultMessage: 'Connection error' },
+
+  // 交易所错误
+  5001: { category: ErrorCategory.EXCHANGE, defaultMessage: 'Exchange API error' },
+  5002: { category: ErrorCategory.EXCHANGE, defaultMessage: 'Order failed' },
+
+  // 网络错误
+  6001: { category: ErrorCategory.NETWORK, defaultMessage: 'Network request failed' },
+  6002: { category: ErrorCategory.NETWORK, defaultMessage: 'Timeout' },
+
+  // 文件错误
+  7001: { category: ErrorCategory.FILE, defaultMessage: 'File operation failed' },
+  7002: { category: ErrorCategory.FILE, defaultMessage: 'File not found' },
+
+  // 认证错误
+  9001: { category: ErrorCategory.AUTH, defaultMessage: 'Authentication failed' },
+  9002: { category: ErrorCategory.AUTH, defaultMessage: 'Authorization failed' }
 };
 
-export function getErrorCategory(code: string): ErrorCategory {
-  return ERROR_MAP[code] || ErrorCategory.UNKNOWN;
-}
+// Note: CircuitBreakerOptions is already exported via interface declaration above.

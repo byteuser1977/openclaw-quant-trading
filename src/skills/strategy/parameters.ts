@@ -1,338 +1,411 @@
 /**
- * Strategy Parameter System
- *
- * Supports hyperparameter definition for strategy optimization.
- * Compatible with Hyperopt and Freqtrade parameter syntax.
+ * Parameter System for Hyperopt
+ * 支持参数定义、验证、序列化（JSON Schema）
  */
 
-export type ParameterType = 'int' | 'decimal' | 'boolean' | 'categorical';
-
-export interface ParameterDefinition<T = any> {
-  name: string;
-  type: ParameterType;
-  default?: T;
-  description?: string;
-  // For numeric types
-  low?: number;
-  high?: number;
-  step?: number;
-  // For categorical
-  choices?: any[];
-  // For boolean
-  // No extra fields needed
+/**
+ * 参数类型枚举
+ */
+export enum ParameterType {
+  INTEGER = 'integer',
+  DECIMAL = 'decimal',
+  BOOLEAN = 'boolean',
+  CATEGORICAL = 'categorical'
 }
 
-export class Parameter<T = any> {
-  public readonly name: string;
-  public readonly type: ParameterType;
-  public readonly default?: T;
-  public readonly description?: string;
-  public readonly low?: number;
-  public readonly high?: number;
-  public readonly step?: number;
-  public readonly choices?: any[];
+/**
+ * 参数基数（用于优化）
+ */
+export enum ParameterSpace {
+  BUY = 'buy',
+  SELL = 'sell',
+  ROI = 'roi',
+  PROTECTION = 'protection',
+  COMMON = 'common'
+}
 
-  constructor(def: ParameterDefinition<T>) {
-    this.name = def.name;
-    this.type = def.type;
-    this.default = def.default;
-    this.description = def.description;
+/**
+ * 参数选项基类
+ */
+export interface ParameterOptionsBase {
+  default?: any;
+  group?: ParameterSpace;
+  description?: string;
+}
 
-    if (def.type === 'int' || def.type === 'decimal') {
-      if (def.low === undefined || def.high === undefined) {
-        throw new Error(`Numeric parameter "${def.name}" requires low and high bounds`);
-      }
-      this.low = def.low;
-      this.high = def.high;
-      this.step = def.step;
+/**
+ * 整型参数选项
+ */
+export interface IntParameterOptions extends ParameterOptionsBase {
+  step?: number;
+}
+
+/**
+ * 浮点数参数选项
+ */
+export interface DecimalParameterOptions extends ParameterOptionsBase {
+  precision?: number;
+  step?: number;
+}
+
+/**
+ * 布尔参数选项
+ */
+export interface BooleanParameterOptions extends ParameterOptionsBase {
+  // 暂无额外选项
+}
+
+/**
+ * 分类参数选项
+ */
+export interface CategoricalParameterOptions extends ParameterOptionsBase {
+  options: string[];
+}
+
+/**
+ * 参数元数据接口
+ * 所有具体参数类需实现这些方法
+ */
+export interface ParameterMetadata {
+  name: string;
+  type: ParameterType;
+  description?: string;
+  default?: any;
+  group: ParameterSpace;
+  validate(value: any): { valid: boolean; error?: string };
+  sample(): any;
+  toJSON(): any;
+}
+
+/**
+ * 整型参数
+ * @example new IntParameter('rsi_period', 10, 30, { step: 2, default: 14 })
+ */
+export class IntParameter implements ParameterMetadata {
+  public readonly type = ParameterType.INTEGER;
+  public readonly group: ParameterSpace;
+
+  constructor(
+    public readonly name: string,
+    public readonly min: number,
+    public readonly max: number,
+    public readonly options?: IntParameterOptions
+  ) {
+    if (min >= max) {
+      throw new Error(`IntParameter: min (${min}) must be < max (${max})`);
     }
-
-    if (def.type === 'categorical') {
-      if (!def.choices || def.choices.length === 0) {
-        throw new Error(`Categorical parameter "${def.name}" requires choices array`);
-      }
-      this.choices = def.choices;
-    }
+    this.group = options?.group ?? ParameterSpace.COMMON;
   }
 
-  validate(value: any): boolean {
-    switch (this.type) {
-      case 'int':
-        return Number.isInteger(value) && value >= (this.low ?? 0) && value <= (this.high ?? Infinity);
-      case 'decimal':
-        return typeof value === 'number' && !isNaN(value) && value >= (this.low ?? -Infinity) && value <= (this.high ?? Infinity);
-      case 'boolean':
-        return typeof value === 'boolean';
-      case 'categorical':
-        return this.choices!.includes(value);
-      default:
-        return false;
-    }
+  public get default(): number | undefined {
+    return this.options?.default;
   }
 
-  toJSON(): ParameterDefinition<T> {
-    const def: ParameterDefinition<T> = {
+  public get step(): number | undefined {
+    return this.options?.step;
+  }
+
+  public get stepValue(): number {
+    return this.step ?? 1;
+  }
+
+  /**
+   * 验证值是否在范围内
+   */
+  public validate(value: any): { valid: boolean; error?: string } {
+    if (typeof value !== 'number' || !Number.isInteger(value)) {
+      return { valid: false, error: `Value must be an integer` };
+    }
+    if (value < this.min || value > this.max) {
+      return { valid: false, error: `Value ${value} out of range [${this.min}, ${this.max}]` };
+    }
+    if (this.step && (value - this.min) % this.step !== 0) {
+      return { valid: false, error: `Value ${value} does not align with step ${this.step}` };
+    }
+    return { valid: true };
+  }
+
+  /**
+   * 随机生成一个值（用于初始采样）
+   */
+  public sample(): number {
+    const range = this.max - this.min;
+    const steps = Math.floor(range / this.stepValue);
+    const stepIndex = Math.floor(Math.random() * (steps + 1));
+    return this.min + stepIndex * this.stepValue;
+  }
+
+  /**
+   * 序列化为 JSON Schema
+   */
+  public toJSON(): any {
+    return {
+      name: this.name,
+      type: this.type,
+      min: this.min,
+      max: this.max,
+      step: this.step,
+      default: this.default,
+      description: this.options?.description ?? `Integer parameter ${this.name} (${this.min}-${this.max})`
+    };
+  }
+}
+
+/**
+ * 浮点数参数
+ * @example new DecimalParameter('stoploss', -0.2, -0.05, { precision: 0.001, default: -0.1 })
+ */
+export class DecimalParameter implements ParameterMetadata {
+  public readonly type = ParameterType.DECIMAL;
+  public readonly group: ParameterSpace;
+
+  constructor(
+    public readonly name: string,
+    public readonly min: number,
+    public readonly max: number,
+    public readonly options?: DecimalParameterOptions
+  ) {
+    if (min >= max) {
+      throw new Error(`DecimalParameter: min (${min}) must be < max (${max})`);
+    }
+    this.group = options?.group ?? ParameterSpace.COMMON;
+  }
+
+  public get default(): number | undefined {
+    return this.options?.default;
+  }
+
+  public get precision(): number | undefined {
+    return this.options?.precision;
+  }
+
+  public get step(): number | undefined {
+    return this.options?.step;
+  }
+
+  public get stepValue(): number {
+    if (this.step) return this.step;
+    if (this.precision) return Math.pow(10, -this.precision);
+    return 0.0001; // default step
+  }
+
+  public validate(value: any): { valid: boolean; error?: string } {
+    if (typeof value !== 'number' || isNaN(value)) {
+      return { valid: false, error: `Value must be a number` };
+    }
+    if (value < this.min || value > this.max) {
+      return { valid: false, error: `Value ${value} out of range [${this.min}, ${this.max}]` };
+    }
+    if (this.precision) {
+      const decimals = this.countDecimals(value);
+      if (decimals > this.precision) {
+        return { valid: false, error: `Value ${value} exceeds precision ${this.precision}` };
+      }
+    }
+    return { valid: true };
+  }
+
+  private countDecimals(value: number): number {
+    const str = value.toString();
+    const dotIndex = str.indexOf('.');
+    return dotIndex === -1 ? 0 : str.length - dotIndex - 1;
+  }
+
+  public sample(): number {
+    const range = this.max - this.min;
+    const steps = Math.floor(range / this.stepValue);
+    const stepIndex = Math.floor(Math.random() * (steps + 1));
+    const value = this.min + stepIndex * this.stepValue;
+    if (this.precision) {
+      return parseFloat(value.toFixed(this.precision));
+    }
+    return value;
+  }
+
+  public toJSON(): any {
+    return {
+      name: this.name,
+      type: this.type,
+      min: this.min,
+      max: this.max,
+      precision: this.precision,
+      step: this.step,
+      default: this.default,
+      description: this.options?.description ?? `Decimal parameter ${this.name} (${this.min}-${this.max})`
+    };
+  }
+}
+
+/**
+ * 布尔参数
+ */
+export class BooleanParameter implements ParameterMetadata {
+  public readonly type = ParameterType.BOOLEAN;
+  public readonly group: ParameterSpace;
+
+  constructor(
+    public readonly name: string,
+    public readonly options?: BooleanParameterOptions
+  ) {
+    this.group = options?.group ?? ParameterSpace.COMMON;
+  }
+
+  public get default(): boolean | undefined {
+    return this.options?.default;
+  }
+
+  public validate(value: any): { valid: boolean; error?: string } {
+    if (typeof value !== 'boolean') {
+      return { valid: false, error: `Value must be a boolean` };
+    }
+    return { valid: true };
+  }
+
+  public sample(): boolean {
+    return Math.random() > 0.5;
+  }
+
+  public toJSON(): any {
+    return {
       name: this.name,
       type: this.type,
       default: this.default,
-      description: this.description,
+      description: this.options?.description ?? `Boolean parameter ${this.name}`
     };
-    if (this.low !== undefined) def.low = this.low as any;
-    if (this.high !== undefined) def.high = this.high as any;
-    if (this.step !== undefined) def.step = this.step as any;
-    if (this.choices !== undefined) def.choices = this.choices as any;
-    return def;
   }
 }
 
-// Concrete parameter classes for type safety
-export class IntParameter extends Parameter<number> {
+/**
+ * 分类参数
+ */
+export class CategoricalParameter implements ParameterMetadata {
+  public readonly type = ParameterType.CATEGORICAL;
+  public readonly group: ParameterSpace;
+
   constructor(
-    name: string,
-    low: number,
-    high: number,
-    defaultVal?: number,
-    description?: string
+    public readonly name: string,
+    public readonly options: string[],
+    public readonly categoricalOptions?: CategoricalParameterOptions
   ) {
-    super({
-      name,
-      type: 'int',
-      low,
-      high,
-      default: defaultVal,
-      description,
-    });
-    if (defaultVal !== undefined && !this.validate(defaultVal)) {
-      throw new Error(`Default value ${defaultVal} is out of bounds [${low}, ${high}]`);
+    if (options.length === 0) {
+      throw new Error(`CategoricalParameter: at least one option required`);
     }
+    this.group = categoricalOptions?.group ?? ParameterSpace.COMMON;
+  }
+
+  public get default(): string | undefined {
+    return this.categoricalOptions?.default;
+  }
+
+  public validate(value: any): { valid: boolean; error?: string } {
+    if (!this.options.includes(value)) {
+      return { valid: false, error: `Value '${value}' not in options: ${this.options.join(', ')}` };
+    }
+    return { valid: true };
+  }
+
+  public sample(): string {
+    const index = Math.floor(Math.random() * this.options.length);
+    return this.options[index];
+  }
+
+  public toJSON(): any {
+    return {
+      name: this.name,
+      type: this.type,
+      options: this.options,
+      default: this.default,
+      description: this.categoricalOptions?.description ?? `Categorical parameter ${this.name}`
+    };
   }
 }
 
-export class DecimalParameter extends Parameter<number> {
-  constructor(
-    name: string,
-    low: number,
-    high: number,
-    defaultVal?: number,
-    step?: number,
-    description?: string
-  ) {
-    super({
-      name,
-      type: 'decimal',
-      low,
-      high,
-      step,
-      default: defaultVal,
-      description,
-    });
-    if (defaultVal !== undefined && !this.validate(defaultVal)) {
-      throw new Error(`Default value ${defaultVal} is out of bounds [${low}, ${high}]`);
-    }
-  }
-}
+/**
+ * 参数空间容器
+ * 管理所有策略参数及其范围
+ */
+export class ParameterSpaceContainer {
+  private parameters: ParameterMetadata[] = [];
 
-export class BooleanParameter extends Parameter<boolean> {
-  constructor(
-    name: string,
-    defaultVal: boolean = false,
-    description?: string
-  ) {
-    super({
-      name,
-      type: 'boolean',
-      default: defaultVal,
-      description,
-    });
-  }
-}
-
-export class CategoricalParameter extends Parameter<any> {
-  constructor(
-    name: string,
-    choices: any[],
-    defaultVal?: any,
-    description?: string
-  ) {
-    super({
-      name,
-      type: 'categorical',
-      choices,
-      default: defaultVal,
-      description,
-    });
-    if (defaultVal !== undefined && !this.validate(defaultVal)) {
-      throw new Error(`Default value ${defaultVal} is not in choices ${choices.join(', ')}`);
-    }
-  }
-}
-
-// Parameter space management
-export interface ParameterSpace {
-  [key: string]: Parameter;
-}
-
-export class ParameterSpaceBuilder {
-  private parameters: ParameterSpace = {};
-
-  addParameter(param: Parameter): this {
-    if (this.parameters[param.name]) {
-      throw new Error(`Parameter "${param.name}" already exists in space`);
-    }
-    this.parameters[param.name] = param;
+  /**
+   * 添加参数
+   */
+  add(param: ParameterMetadata): this {
+    this.parameters.push(param);
     return this;
   }
 
-  addInt(name: string, low: number, high: number, defaultVal?: number, description?: string): this {
-    return this.addParameter(new IntParameter(name, low, high, defaultVal, description));
+  /**
+   * 批量添加参数
+   */
+  addAll(params: ParameterMetadata[]): this {
+    this.parameters.push(...params);
+    return this;
   }
 
-  addDecimal(name: string, low: number, high: number, defaultVal?: number, step?: number, description?: string): this {
-    return this.addParameter(new DecimalParameter(name, low, high, defaultVal, step, description));
+  /**
+   * 根据名称获取参数
+   */
+  get(name: string): ParameterMetadata | undefined {
+    return this.parameters.find(p => p.name === name);
   }
 
-  addBoolean(name: string, defaultVal: boolean = false, description?: string): this {
-    return this.addParameter(new BooleanParameter(name, defaultVal, description));
+  /**
+   * 获取所有参数
+   */
+  getAll(): ParameterMetadata[] {
+    return [...this.parameters];
   }
 
-  addCategorical(name: string, choices: any[], defaultVal?: any, description?: string): this {
-    return this.addParameter(new CategoricalParameter(name, choices, defaultVal, description));
+  /**
+   * 获取参数数量
+   */
+  get size(): number {
+    return this.parameters.length;
   }
 
-  build(): ParameterSpace & {
-    validate: (values: Record<string, any>) => { valid: boolean; errors: string[] };
-    generateRandomSample: (rng?: () => number) => Record<string, any>;
-  } {
-    const space = {
-      ...this.parameters,
-      validate: this.validate.bind(this),
-      generateRandomSample: this.generateRandomSample.bind(this),
-    } as ParameterSpace & {
-      validate: (values: Record<string, any>) => { valid: boolean; errors: string[] };
-      generateRandomSample: (rng?: () => number) => Record<string, any>;
-    };
-    return space;
-  }
-
-  toJSON(): ParameterDefinition[] {
-    return Object.values(this.parameters).map((p) => p.toJSON());
-  }
-
-  validate(values: Record<string, any>): { valid: boolean; errors: string[] } {
+  /**
+   * 验证参数字典
+   */
+  public validate(values: Record<string, any>): { valid: boolean; errors: string[] } {
     const errors: string[] = [];
-    for (const [name, param] of Object.entries(this.parameters)) {
-      if (values[name] === undefined) {
-        if (param.default !== undefined) {
-          values[name] = param.default;
-        } else {
-          errors.push(`Missing required parameter: ${name}`);
-          continue;
+
+    for (const param of this.getAll()) {
+      if (param.name in values) {
+        const result = param.validate(values[param.name]);
+        if (!result.valid) {
+          errors.push(`Parameter '${param.name}': ${result.error}`);
         }
-      }
-      if (!param.validate(values[name])) {
-        errors.push(`Invalid value for parameter "${name}": ${values[name]}`);
-      }
-    }
-    return { valid: errors.length === 0, errors };
-  }
-
-  generateRandomSample(rng: () => number = Math.random): Record<string, any> {
-    const sample: Record<string, any> = {};
-    for (const [name, param] of Object.entries(this.parameters)) {
-      if (param.default !== undefined && rng() < 0.1) {
-        // 10% chance to use default (exploration)
-        sample[name] = param.default;
-        continue;
-      }
-      switch (param.type) {
-        case 'int':
-          sample[name] = Math.floor(rng() * (param.high! - param.low! + 1)) + param.low!;
-          break;
-        case 'decimal':
-          const range = param.high! - param.low!;
-          sample[name] = param.low! + rng() * range;
-          if (param.step) {
-            sample[name] = Math.round(sample[name] / param.step) * param.step;
-          }
-          break;
-        case 'boolean':
-          sample[name] = rng() < 0.5;
-          break;
-        case 'categorical':
-          sample[name] = param.choices![Math.floor(rng() * param.choices!.length)];
-          break;
+      } else if (param.default === undefined) {
+        errors.push(`Parameter '${param.name}' is required but not provided`);
       }
     }
-    return sample;
-  }
-}
 
-// Freqtrade-style parameter definitions
-export namespace StrategyParameters {
-  export function roiStep(min: number = 0.01, max: number = 0.1, step: number = 0.01): ParameterSpaceBuilder {
-    return new ParameterSpaceBuilder().addDecimal('roi_step', min, max, 0.05, step, 'ROI step size');
+    return {
+      valid: errors.length === 0,
+      errors
+    };
   }
 
-  export function stoploss(min: number = -0.2, max: number = -0.02, step: number = 0.01): ParameterSpaceBuilder {
-    return new ParameterSpaceBuilder().addDecimal('stoploss', min, max, -0.1, step, 'Stop loss percentage');
-  }
-
-  export function trailingStop(enableProb: number = 0.5): ParameterSpaceBuilder {
-    return new ParameterSpaceBuilder()
-      .addBoolean('trailing_stop', false, 'Enable trailing stop')
-      .addDecimal('trailing_stop_positive', 0.01, 0.1, 0.03, 0.01, 'Trailing stop positive offset')
-      .addDecimal('trailing_stop_positive_offset', 0.01, 0.2, 0.04, 0.01, 'Trailing stop positive offset');
-  }
-
-  export function rsiPeriod(low: number = 10, high: number = 50, defaultVal?: number): ParameterSpaceBuilder {
-    return new ParameterSpaceBuilder().addInt('rsi_period', low, high, defaultVal ?? 14, 'RSI calculation period');
-  }
-
-  export function emaPeriods(low: number = 5, high: number = 50): ParameterSpaceBuilder {
-    const builder = new ParameterSpaceBuilder();
-    builder.addInt('ema_fast', low, high, 10, 'Fast EMA period');
-    builder.addInt('ema_slow', low, high, 21, 'Slow EMA period');
-    return builder;
-  }
-
-  export function macdParams(): ParameterSpaceBuilder {
-    return new ParameterSpaceBuilder()
-      .addInt('macd_fast', 8, 20, 12, 'MACD fast EMA period')
-      .addInt('macd_slow', 20, 40, 26, 'MACD slow EMA period')
-      .addInt('macd_signal', 5, 15, 9, 'MACD signal line period');
-  }
-
-  export function bbandsParams(): ParameterSpaceBuilder {
-    return new ParameterSpaceBuilder()
-      .addInt('bbands_period', 10, 50, 20, 'Bollinger Bands period')
-      .addDecimal('bbands_std', 1.5, 3.0, 2.0, 0.1, 'Bollinger Bands standard deviation');
-  }
-
-  export function atrParams(): ParameterSpaceBuilder {
-    return new ParameterSpaceBuilder().addInt('atr_period', 10, 30, 14, 'ATR calculation period');
-  }
-}
-
-// Factory function for common parameter templates
-export function createParameterSpace(
-  name: string,
-  parameters: (() => ParameterSpaceBuilder) | ParameterSpaceBuilder
-): ParameterSpace {
-  if (typeof parameters === 'function') {
-    return parameters().build();
-  }
-  return parameters.build();
-}
-
-export function mergeParameterSpaces(...spaces: ParameterSpace[]): ParameterSpace {
-  const merged: ParameterSpace = {};
-  for (const space of spaces) {
-    for (const [name, param] of Object.entries(space)) {
-      if (merged[name]) {
-        console.warn(`Parameter "${name}" overwritten during merge`);
-      }
-      merged[name] = param;
+  /**
+   * 生成随机参数采样
+   */
+  public sampleRandom(): Record<string, any> {
+    const result: Record<string, any> = {};
+    for (const param of this.getAll()) {
+      result[param.name] = param.sample();
     }
+    return result;
   }
-  return merged;
+
+  /**
+   * 导出为 JSON Schema（用于 API 文档、前端表单生成）
+   */
+  public toJSONSchema(): any {
+    return {
+      type: 'object',
+      properties: this.getAll().map(p => p.toJSON()),
+      required: this.getAll().filter(p => p.default === undefined).map(p => p.name)
+    };
+  }
 }

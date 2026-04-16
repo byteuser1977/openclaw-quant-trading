@@ -1,37 +1,36 @@
 /**
  * OpenClaw Quant Trading Skills
+ * 主入口模块
  *
- * A comprehensive suite of skills for quantitative trading,
- * integrating Freqtrade with OpenClaw ecosystem.
+ * 提供量化交易相关的所有核心功能：
+ * - 配置管理 (Config)
+ * - 日志系统 (Logger)
+ * - 错误处理 (Errors)
+ * - 技能接口 (Skills)
  *
- * @version 0.1.0
- * @license MIT
+ * @packageDocumentation
  */
 
-// Version
-export const VERSION = '0.1.0';
-
-// Core modules
+// Core exports
 export * from './core/config';
 export * from './core/logger';
 export * from './core/errors';
 export * from './core/vault';
 export * from './core/allowlist';
-export * from './core/worker';
 
-// Strategy skill (to be implemented)
+// Utils exports (to be implemented)
+export * from './utils/retry';
+export * from './utils/validation';
+
+// Skills exports (to be implemented)
 export * from './skills/strategy';
-
-// New modules
-export * from './skills/data';
-export * from './skills/risk';
-export * from './skills/risk/integration';
-export * from './skills/exchange/adapter';
-export * from './skills/persistence';
-export * from './skills/reporting';
 export * from './skills/backtesting';
 export * from './skills/hyperopt';
+export * from './skills/data';
+export * from './skills/risk';
+export * from './skills/exchange';
+export * from './skills/persistence';
+export * from './skills/reporting';
 
-// Utils (to be implemented)
-// export * from './utils/retry';
-// export * from './utils/validation';
+// Version
+export const VERSION = '0.1.0';

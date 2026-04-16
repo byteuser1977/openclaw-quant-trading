@@ -1,224 +1,543 @@
-# Development Guide - Quant Skill Developer
+# OpenClaw Quant Trading - 开发指南
 
-## 📚 项目概述
-
-本项目围绕量化交易技能栈构建，目标是实现 **安全、可靠、可扩展** 的全链路交易系统。主要模块包括:
-- **Core**: 配置、日志、错误、Vault、Allowlist
-- **Skills**: Strategy、Backtesting、Hyperopt、Data Management、Risk Management、Exchange Adapter
-- **Infrastructure**: CI/CD、Docker、测试
+**版本**: 0.1.0
+**最后更新**: 2026-03-24
+**Phase**: 2 Sprint 1
 
 ---
 
-## 🔐 安全层 (Vault & Allowlist)
+## 📦 项目概述
 
-### Vault (`src/core/vault.ts`)
-- 使用 **AES‑256‑GCM** 加密密钥
-- 支持 **作用域** (`SecretScope`) 隔离：`EXCHANGE`、`DATABASE`、`NOTIFICATION`、`GLOBAL`
-- 支持 **端点白名单**，仅在允许的 URL 上解密
-- 自动 **密钥轮换提醒** (`rotate()`)
-- 审计日志记录所有 **存取操作**
+这是一个基于 **OpenClaw** 和 **Freqtrade** 的量化交易技能包。提供完整的策略开发、回测、参数优化、风险管理能力。
 
-### Allowlist (`src/core/allowlist.ts`)
-- 基于 **URL 通配符** (`*`、`?`) 与 **HTTP 方法** 的白名单
-- 可选 **速率限制** (`rateLimit`) 防止滥用
-- `permits(url, method, meta)` 返回 `{allowed: boolean, reason?: string}`
-- `loadRules(rules)` 动态加载规则，`exportRules()` 导出当前配置
+### 核心技能模块
 
-### 集成示例 (`src/skills/exchange/adapter.ts`)
-- 在 `ExchangeAdapter` 中通过 `Allowlist.permits` 检查请求合法性
-- 通过 `Vault.decrypt` 自动注入 API Key
-- 所有网络请求均记录审计日志
+| 模块 | 职责 | 状态 |
+|-----|------|------|
+| **Strategy** | 策略创建、编译、验证 | 🚧 Phase 2 |
+| **Backtesting** | 回测执行、结果分析 | 🚧 Phase 2 |
+| **Hyperopt** | 参数自动优化 (Optuna) | 🚧 Phase 2 |
+| **Data Management** | 数据下载 (ccxt)、验证、存储 | 🚧 Phase 2 |
+| **Risk Management** | 仓位计算、动态止损、熔断 | 🚧 Phase 2 |
+| **Exchange Adapter** | 统一交易所 API | 🚧 Phase 2 |
+| **Persistence** | 数据持久化 (PostgreSQL/SQLite) | 🚧 Phase 2 |
+| **Reporting** | 报告生成、可视化 | 🚧 Phase 2 |
 
 ---
 
-## 📦 数据管理 (`src/skills/data/index.ts`)
+## 🛠️ 技术栈
 
-### 功能概览
-- **ccxt 集成**：支持所有交易所 (`ccxt.exchanges`)
-- **Vault 注入**：自动读取交易所 API Key/Secret
-- **OHLCV 下载**：单次或批量下载
-- **数据验证**：缺失、重复、异常、时间缺口检测
-- **数据清洗**：去重、过滤、排序、填补缺口
-- **工具函数**：`getSupportedExchanges()`、`isSymbolSupported()`
-
-### 关键类
-- `DataManager`
-  - `downloadOHLCV`
-  - `downloadOHLCVBatched`
-  - `validateData`
-  - `cleanData`
-  - `fillGaps`
+- **语言**: TypeScript 5.3+ (编译至 Node.js 18+)
+- **运行时**: Node.js 18+
+- **包管理**: npm 9+
+- **测试框架**: Jest 29+ (ts-jest)
+- **代码质量**: ESLint + Prettier
+- **日志**: Winston
+- **配置**: dotenv + JSON/YAML
+- **数据库**: SQLite (开发) / PostgreSQL (生产)
+- **缓存/队列**: Redis (可选)
 
 ---
 
-## ⚖️ 风险管理 (`src/skills/risk/index.ts`)
+## 🚀 快速开始
 
-### 三层防护
-1. **仓位计算** (Layer 1)
-   - `fixed_ratio`, `fixed_amount`, `kelly`, `kelly_fraction`
-2. **动态止损** (Layer 2)
-   - `fixed`, `trailing`, `atr`, `hybrid`
-3. **系统熔断** (Layer 3)
-   - 日/周亏损、连续亏损、最大回撤阈值
+### 环境要求
 
-### 关键接口
-- `calculatePositionSize(method, params)`
-- `calculateStoploss(type, params)`
-- `checkCircuitBreaker(params)`
-- `getRiskEvents()` / `clearEvents()`
+- Node.js >= 18.0.0
+- npm >= 9.0.0
+- Git
 
-### 事件日志
-- 每一次风险决策都会记录 `RiskEvent`，包括时间戳、类型、严重程度、详情。
+### 安装依赖
 
----
+```bash
+# 克隆仓库（如尚未）
+git clone https://github.com/openclaw/openclaw-quant-trading.git
+cd openclaw-quant-trading
 
-## 📦 代码结构
-```
-src/
-  core/        # Vault, Allowlist, Logger, Config, Errors, Worker
-  skills/
-    strategy/   # Strategy 编译、参数空间、回测
-    backtesting/ # Backtest 执行与结果处理
-    hyperopt/   # 参数优化
-    data/       # DataManager (ccxt + 验证)
-    risk/       # RiskManager (仓位、止损、熔断)
-    risk/integration.ts  # RiskIntegration (策略集成层)
-    exchange/   # ExchangeAdapter (Vault + Allowlist)
-    persistence # PersistenceManager (飞书 Bitable 集成)
-    reporting/  # ReportingManager (报告生成、统计)
+# 安装依赖
+npm ci
 ```
 
----
+### 开发模式
 
-## 💾 数据持久化 (`src/skills/persistence/index.ts`)
+```bash
+# 类型检查
+npm run typecheck
 
-### 功能概览
-- **飞书多维表格集成**：将交易数据写入协作表格
-- **三张表映射**：
-  - `tblFgMYmwl1mvRt8` (交易记录)
-  - `tblQ0zgTAM5Gx93z` (绩效指标)
-  - `tblBGFCTgZ16sIbB` (警报历史)
-- **批量操作**：支持批量创建交易记录和风险告警
-- **查询**：支持分页和简单筛选
+# 代码检查
+npm run lint
 
-### 关键类
-- `PersistenceManager`
-  - `saveTrade(record)` / `batchSaveTrades(records)`
-  - `savePerformance(metric)`
-  - `saveAlert(alert)` / `batchSaveAlerts(alerts)`
-  - `listTrades(options)` 查询交易
+# 自动修复 lint 问题
+npm run lint:fix
 
----
+# 运行测试
+npm test
 
-## 📊 报告生成 (`src/skills/reporting/index.ts`)
+# 监听模式运行测试
+npm run test:watch
 
-### 功能概览
-- **统计计算**：基于交易数据计算胜率、盈亏比、夏普比率、最大回撤等
-- **多格式输出**：Markdown（用于飞书文档）、CSV（用于 Excel 分析）
-- **持久化集成**：自动从 `PersistenceManager` 加载交易数据
-- **可定制**：可配置是否包含交易明细表、限制条数
+# 查看测试覆盖率
+npm run test:cov
 
-### 关键类
-- `ReportingManager`
-  - `calculateStats(trades)` → `TradeStats`
-  - `generateMarkdownReport(trades, options)`
-  - `generateCSV(trades)`
-  - `generateReportFromDatabase(options)` 便捷方法
+# 构建项目
+npm run build
 
----
-
-## 🧪 单元测试
-
-### 测试结构
-
-```
-tests/
-  unit/
-    core/           # Vault, Allowlist, Logger, Config, Errors, Worker
-    skills/
-      data/         # DataManager
-      risk/         # RiskManager
-      backtesting/  # BacktestEngine
-      hyperopt/     # HyperoptEngine
-      persistence/  # PersistenceManager (mocking needed)
-      reporting/    # ReportingManager (mocking needed)
+# 开发热重载（使用 ts-node-dev）
+npm run dev
 ```
 
-### 现有测试文件
+### 构建
 
-| 模块 | 测试文件 | 状态 |
-|------|---------|------|
-| Vault | `tests/unit/core/vault.test.ts` | ✅ 12+ 用例 |
-| Allowlist | `tests/unit/core/allowlist.test.ts` | ✅ 18+ 用例 |
-| DataManager | `tests/unit/skills/data_manager.test.ts` | ✅ 数据验证/清洗/缺口填充 |
-| RiskManager | `tests/unit/skills/risk_manager.test.ts` | ✅ 仓位计算、止损、熔断 |
-| Backtesting | `tests/unit/skills/backtesting.test.ts` | ✅ 引擎基础功能 |
-| Hyperopt | `tests/unit/skills/hyperopt.test.ts` | ✅ 采样、评分、早停逻辑 |
+```bash
+# 清理并构建
+npm run clean && npm run build
+
+# 输出文件在 dist/ 目录
+```
+
+---
+
+## 📁 项目结构
+
+```
+openclaw-quant-trading/
+├── src/
+│   ├── core/              # 核心框架
+│   │   ├── config.ts      # 配置管理
+│   │   ├── logger.ts      # 日志系统
+│   │   └── errors.ts      # 错误处理
+│   ├── skills/            # 技能模块
+│   │   ├── strategy/      # 策略模板
+│   │   ├── backtesting/   # 回测引擎
+│   │   ├── hyperopt/      # 参数优化
+│   │   ├── data/          # 数据管理
+│   │   ├── risk/          # 风险管理
+│   │   ├── exchange/      # 交易所适配
+│   │   ├── persistence/   # 数据持久化
+│   │   └── reporting/     # 报告生成
+│   ├── utils/             # 工具函数
+│   └── index.ts           # 主入口
+├── tests/
+│   ├── unit/              # 单元测试
+│   │   └── core/          # 核心模块测试
+│   ├── integration/       # 集成测试
+│   └── fixtures/          # 测试 fixtures
+├── configs/               # 配置文件
+│   ├── default.json
+│   ├── development.json
+│   ├── testing.json
+│   └── production.json
+├── docs/                  # 文档
+├── scripts/               # 构建/部署脚本
+├── memory/                # Agent 记忆
+├── .github/workflows/     # CI/CD
+├── tsconfig.json
+├── jest.config.js
+├── .eslintrc.js
+└── package.json
+```
+
+---
+
+## 🔧 核心配置
+
+### 配置系统 (`src/core/config.ts`)
+
+支持多环境配置 + 环境变量覆盖。
+
+#### 加载优先级
+
+1. 默认配置 (`defaultConfig`)
+2. JSON 配置文件 (`configs/{env}.json`)
+3. 环境变量 (`OPENCLAW_QUANT_*`)
+
+#### 使用示例
+
+```typescript
+import { initConfig, getConfig, getConfigValue } from './core/config';
+
+// 初始化（自动加载 .env）
+const config = initConfig('development');
+
+// 获取完整配置
+const fullConfig = getConfig();
+console.log(fullConfig.api.port);
+
+// 获取指定字段
+const dbHost = getConfigValue<string>('database.host');
+
+// 验证配置
+const validation = validateConfig();
+if (!validation.valid) {
+  console.error('Missing config:', validation.errors);
+}
+```
+
+#### 环境变量格式
+
+```
+OPENCLAW_QUANT_API_PORT=8080
+OPENCLAW_QUANT_DATABASE_HOST=localhost
+OPENCLAW_QUANT_LOGGING_LEVEL=debug
+```
+
+---
+
+### 日志系统 (`src/core/logger.ts`)
+
+基于 Winston，支持结构化 JSON 日志。
+
+#### 使用示例
+
+```typescript
+import { initLogger, getLogger, Logger } from './core/logger';
+
+// 初始化全局日志器
+initLogger({ level: 'info' });
+
+// 获取日志实例
+const logger = getLogger('my-module');
+
+// 各等级日志
+logger.trace('Trace message', { traceId: 'abc' });
+logger.debug('Debug info', { userId: 123 });
+logger.info('Info message', { action: 'create', resource: 'strategy' });
+logger.warn('Warning!', { risk: 'high' });
+logger.error('Error occurred', error, { code: 500 });
+logger.fatal('Fatal error!', error, { critical: true });
+
+// 子日志器（自动携带上下文）
+const childLogger = logger.child('backtesting');
+childLogger.info('Backtest started', { backtestId: 'xyz' });
+```
+
+#### 配置项
+
+| 选项 | 说明 | 默认 |
+|-----|------|------|
+| `level` | 日志等级 | `info` |
+| `format` | 输出格式 (`json`\|`pretty`) | `json` |
+| `output` | 输出目标 (`console`\|`file`\|`both`) | `console` |
+| `filePath` | 日志文件路径 | `logs/app.log` |
+| `maxFiles` | 保留日志文件数 | `14` |
+| `maxsize` | 单个文件大小 (bytes) | `10MB` |
+
+---
+
+### 错误处理 (`src/core/errors.ts`)
+
+统一异常体系 + 重试装饰器 + 熔断器。
+
+#### 错误类别
+
+| 类别 | 范围 | 说明 |
+|-----|------|------|
+| `VALIDATION` | 1000-1999 | 参数、配置验证错误 |
+| `STRATEGY` | 3000-3999 | 策略逻辑错误 |
+| `DATABASE` | 4000-4999 | 数据库操作错误（可重试） |
+| `EXCHANGE` | 5000-5999 | 交易所 API 错误（可重试） |
+| `NETWORK` | 6000-6999 | 网络请求错误（可重试） |
+| `FILE` | 7000-7999 | 文件系统错误 |
+| `INTERNAL` | 8000-8999 | 内部系统错误 |
+| `AUTH` | 9000-9999 | 认证/授权错误 |
+
+#### 使用示例
+
+```typescript
+import {
+  OpenClawError,
+  ValidationError,
+  NetworkError,
+  retry,
+  CircuitBreaker,
+  ErrorCategory
+} from './core/errors';
+
+// 抛出特定错误
+throw new ValidationError('Invalid parameter', 'timeframe', '5m');
+
+// 可重试操作（装饰器）
+class ExchangeService {
+  @retry({
+    maxRetries: 3,
+    strategy: RetryStrategy.EXPONENTIAL,
+    baseDelayMs: 1000
+  })
+  async fetchohlcv(pair: string): Promise<any> {
+    // 可能失败的网络请求
+    return await ccxt.fetchOHLCV(pair);
+  }
+}
+
+// 熔断器
+const breaker = new CircuitBreaker({
+  failureThreshold: 5,
+  resetTimeoutMs: 60000
+});
+
+await breaker.execute(async () => {
+  return await exchange.fetchBalance();
+});
+```
+
+---
+
+## 🧪 测试
 
 ### 运行测试
 
 ```bash
-# 运行所有测试
+# 所有测试 + 覆盖率
 npm test
 
-# 运行特定模块
-npm test -- --testPathPattern=vault
+# 仅单元测试
+npm run test:unit
 
-# 生成覆盖率报告
-npm run test:coverage
+# 仅集成测试
+npm run test:integration
+
+# 监听模式
+npm run test:watch
+
+# 覆盖率报告在 coverage/ 目录
 ```
 
-### Mock 策略
+### 覆盖率目标
 
-Backtesting 和 Hyperopt 需要提供策略函数 (`StrategyFunction`) 作为参数。在单元测试中，使用简单的模拟策略验证核心逻辑：
+- **全局**: >= 80% (branches, functions, lines, statements)
+- **核心模块**: >= 90%
+
+### 编写测试
 
 ```typescript
-const mockStrategy: StrategyFunction = async (ctx) => {
-  if (ctx.pastData.length < 2) return null;
-  const last = ctx.pastData[ctx.pastData.length - 1];
-  const prev = ctx.pastData[ctx.pastData.length - 2];
-  if (last.close > prev.close && ctx.state.position === 0) {
-    return { symbol: 'BTC/USDT', side: 'BUY', price: last.close };
-  }
-  return null;
-};
+// tests/unit/example.test.ts
+import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { SomeClass } from '../../src/core/some-module';
+
+describe('SomeClass', () => {
+  let instance: SomeClass;
+
+  beforeEach(() => {
+    instance = new SomeClass();
+  });
+
+  it('should do something', () => {
+    const result = instance.method();
+    expect(result).toBe(expected);
+  });
+});
+```
+
+### Fixtures
+
+使用 `tests/fixtures/` 目录存储共享测试数据：
+
+```typescript
+import { validConfig } from '../fixtures/config.fixture';
 ```
 
 ---
 
-## 📊 测试覆盖率目标
+## 🔍 类型检查与代码质量
 
-- **核心模块 (Core)**: > 85%
-- **技能模块 (Skills)**: > 80%
-- **集成测试**: 关键路径 100%
+### TypeScript
 
-> ⚠️ **当前问题**: Jest 配置与 `tsconfig.json` 的 `paths` 映射 (`@/*`) 可能存在冲突，部分测试在 CI 环境可能失败。正在统一配置中。
+```bash
+# 检查类型
+npm run typecheck
+```
 
----
+### ESLint
 
-## 🧪 单元测试
-- `tests/unit/core/vault.test.ts`、`allowlist.test.ts`
-- `tests/unit/core/data_manager.test.ts` (新增)
-- `tests/unit/core/risk_manager.test.ts` (待补充)
+```bash
+# 运行 lint
+npm run lint
 
-> 注意: 当前 Jest 配置与 `tsconfig` 存在冲突，后续将统一 `moduleNameMapper` 解决路径问题。
+# 自动修复
+npm run lint:fix
+```
 
----
+### Prettier
 
-## 📅 下一步计划 (Phase 2 Sprint 4)
-1. 完成 **RiskManager** 单元测试并实现 `risk_manager.test.ts`
-2. 将 **DataManager** 与 **ExchangeAdapter** 完全集成，实现端到端数据流
-3. 引入 **Worker Isolation**：在 `src/core/worker.ts` 中实现策略运行的 worker 线程
-4. 完成 **CI/CD** 流水线：自动跑单元测试、代码质量检查、文档发布
+代码格式化在 CI 中自动执行，本地可使用：
 
----
-
-## 📚 参考资源
-- **Vault 设计**: docs/vault_design.md (待完善)
-- **Allowlist 规范**: docs/allowlist_spec.md
-- **Data Management**: docs/data_management_design.md
-- **Risk Management**: docs/risk_management_design.md
+```bash
+npx prettier --write src/
+```
 
 ---
 
-*本文件将随项目迭代保持更新*
+## 📝 贡献规范
+
+### Git 工作流
+
+1. 从 `main` 创建功能分支
+2. 开发 + 测试 + lint + typecheck
+3. 提交（遵循 Conventional Commits）
+4. 创建 Pull Request
+5. CI 通过后 review & merge
+
+### Commit 规范
+
+```
+feat: 添加新功能
+fix: 修复 bug
+docs: 文档更新
+test: 测试相关
+refactor: 重构
+chore: 构建/工具更新
+```
+
+示例:
+
+```bash
+git commit -m "feat(strategy): 添加 MACD 指标计算"
+```
+
+---
+
+## 🏗️ 构建与打包
+
+### 构建命令
+
+```bash
+# 清理并构建
+npm run clean && npm run build
+
+# 监听模式
+npm run build:watch
+```
+
+### 输出
+
+构建后，TypeScript 编译输出至 `dist/` 目录，包含：
+
+- `index.js` - 主入口
+- `index.d.ts` - 类型声明
+- `core/`, `skills/`, `utils/` - 模块文件
+
+### 发布准备
+
+确保 `dist/` 在 `.npmignore` 或 `package.json` 的 `files` 字段中包括。
+
+---
+
+## 🔐 安全与最佳实践
+
+### 敏感信息
+
+- **绝不** 提交 `.env` 或密钥文件
+- 使用 `.env.local` 本地覆盖
+- 生产环境使用飞书/云平台密钥管理
+
+### 错误处理
+
+- 使用 `errors.ts` 定义的异常类
+- 网络/交易所错误标记 `retryable: true`
+- 记录错误堆栈到日志
+
+### 日志
+
+- **不** 记录敏感数据（密码、密钥、PII）
+- 使用结构化日志（JSON）
+- 区分环境：生产环境设为 `info` 级别
+
+---
+
+## 📊 性能考虑
+
+### 回测性能
+
+- 目标: 1M bars/min (单 worker)
+- 使用 DataFrame 行推进（保持简单，后续向量化）
+- 启用数据缓存（HDF5/Parquet）
+
+### 内存管理
+
+- Hyperopt 限制 trial 数量
+- 每轮清理内存
+- 大型数据集流式处理
+
+---
+
+## 🧩 扩展技能
+
+### 新增技能模块
+
+1. 在 `src/skills/` 创建新目录
+2. 实现 `index.ts` 导出主要类/函数
+3. 在主入口 `src/index.ts` 导出
+4. 在 `docs/` 添加技能文档
+5. 编写单元测试于 `tests/unit/skills/`
+
+### 示例骨架
+
+```typescript
+// src/skills/myskill/index.ts
+export interface MySkillConfig {
+  // ...
+}
+
+export class MySkill {
+  constructor(private config: MySkillConfig) {}
+
+  async execute(): Promise<void> {
+    // 实现
+  }
+}
+
+export function createMySkill(config: MySkillConfig): MySkill {
+  return new MySkill(config);
+}
+```
+
+---
+
+## 🔗 相关资源
+
+- **Freqtrade 官方**: https://freqtrade.io/
+- **OpenClaw 文档**: https://docs.openclaw.ai
+- **API 规范**: `docs/api_spec.json`
+- **架构设计**: `docs/architecture.md`
+- **风险管理设计**: `docs/risk_management_design.md`
+- **错误处理设计**: `docs/error_handling_design.md`
+
+---
+
+## ❓ 常见问题
+
+### Q: 如何添加新的交易所支持？
+
+A: 使用 `ccxt` 库，所有交易所已统一接口。在 `ExchangeAdapter` 中配置参数即可。
+
+### Q: TA-Lib 安装问题？
+
+A: 建议使用预编译 wheel 或 Docker。开发阶段可软回退为纯 JS 实现。
+
+### Q: 如何调试回测？
+
+A: 使用 `logger.debug()` 记录详细步骤；配置 `logging.format=pretty`。
+
+### Q: 多用户数据隔离？
+
+A: 前端传递 `user_id`，后端所有查询强制附加 `WHERE user_id = ?`。
+
+---
+
+## 🎯 Phase 2 路线图
+
+| Sprint | 目标 | 时长 |
+|--------|------|------|
+| **Sprint 1** | 基础框架（config, logger, errors, tests, CI） | 3d ✅ |
+| **Sprint 2** | Strategy Skill（参数系统、指标计算） | 5d |
+| **Sprint 3** | Data Skill（数据下载、验证、存储） | 4d |
+| **Sprint 4** | Backtesting Core（回测引擎、订单模拟） | 6d |
+| **Sprint 5** | Hyperopt + Test（Optuna 集成） | 5d |
+| **Sprint 6** | Risk + Reporting（仓位、熔断、统计） | 4d |
+| **Sprint 7** | 文档与示例（教程、API 文档） | 3d |
+
+---
+
+## 📄 许可证
+
+MIT © OpenClaw Team

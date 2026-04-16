@@ -1,536 +1,278 @@
 /**
  * Strategy Compiler
- *
- * Generates executable Python strategy files for Freqtrade from declarative configuration.
- * Produces standard IStrategy-compatible Python classes.
+ * 将参数化策略配置编译为可执行 Python 代码（Freqtrade 兼容）
  */
 
-import { ParameterSpace } from './parameters';
-import { IndicatorConfig } from './indicators';
+import { ParameterMetadata, ParameterSpaceContainer } from './parameters';
 import { getLogger } from '../../core/logger';
 
-export type { IndicatorConfig };
-export type { ParameterSpace };
+const logger = getLogger('strategy-compiler');
 
-export interface CompiledStrategy {
-  code: string;
-  className: string;
-  fileName: string;
-  imports: string[];
-  indicators: IndicatorConfig[];
-  parameters: Record<string, any>;
-}
-
-export interface StrategyTemplate {
+/**
+ * 策略配置接口
+ */
+export interface StrategyConfig {
   name: string;
   description?: string;
-  className?: string;
-  timeframe: string;
-  indicators: IndicatorConfig[];
-  entryConditions: (Condition | ConditionNode)[];
-  exitConditions: (Condition | ConditionNode)[];
-  parameters: Record<string, any>;
-  GeminiTags?: string[]; // For hyperopt grouping
-  version?: string;
-  author?: string;
-}
-
-export type LogicOperator = 'AND' | 'OR';
-
-export interface Condition {
-  left: string;
-  operator: '<' | '<=' | '>' | '>=' | '==' | '!=';
-  right: number | string;
-  rightIsColumn?: boolean;
-  logic?: LogicOperator; // Default AND
+  className?: string;  // Python class name, default: CamelCase(name)
+  parameters: ParameterSpaceContainer;
+  indicators: string[];  // 需要计算的指标列表
+  buyCondition: string;  // Python-like boolean expression
+  sellCondition: string; // Python-like boolean expression
+  timeframe: string;     // e.g., '5m'
+  pair?: string;         // optional default pair
+  version?: string;      // strategy version
 }
 
 /**
- * 条件组合节点（支持嵌套逻辑）
+ * 编译结果
  */
-export interface ConditionNode {
-  type: 'condition' | 'group';
-  logic?: LogicOperator; // Only for group
-  condition?: Condition;
-  children?: ConditionNode[];
+export interface CompileResult {
+  success: boolean;
+  code?: string;
+  className: string;
+  filePath?: string;  // if saved to disk
+  errors?: string[];
 }
 
+/**
+ * 策略编译器
+ *
+ * 生成兼容 Freqtrade IStrategy 接口的 Python 代码
+ */
 export class StrategyCompiler {
-  private logger: any;
+  private static readonly INDENT = '    '; // 4 spaces
 
-  constructor() {
-    this.logger = getLogger('compiler');
+  /**
+   * 编译策略配置为 Python 代码
+   */
+  compile(config: StrategyConfig): CompileResult {
+    const errors: string[] = [];
+
+    // 1. 验证配置
+    if (!config.name) {
+      errors.push('Strategy name is required');
+      return { success: false, errors, className: '' };
+    }
+
+    const className = config.className || this.toCamelCase(config.name, true);
+    const params = config.parameters.getAll();
+
+    // 2. 生成 Python 代码
+    try {
+      const code = this.generatePythonCode(config, className, params);
+      return {
+        success: true,
+        code,
+        className
+      };
+    } catch (error: any) {
+      logger.error('Compilation failed', error);
+      return {
+        success: false,
+        errors: [error.message],
+        className
+      };
+    }
   }
 
-  compile(template: StrategyTemplate): CompiledStrategy {
-    this.logger.info(`Compiling strategy: ${template.name}`);
-
-    const className = template.className || this.toPascalCase(template.name);
-    const fileName = `${this.toSnakeCase(template.name)}.py`;
-
-    // Generate Python code
-    const code = this.generatePythonCode(template, className);
-
-    return {
-      code,
-      className,
-      fileName,
-      imports: this.generateImports(template),
-      indicators: template.indicators,
-      parameters: template.parameters,
-    };
-  }
-
-  private generatePythonCode(template: StrategyTemplate, className: string): string {
-    const imports = this.generateImports(template).join('\n');
-    const paramLines = this.generateParameterLines(template.parameters);
-    const startupCandles = this.calculateStartupCandles(template.indicators);
-    const indicatorLines = this.generateIndicatorLines(template.indicators);
-    const entryLines = this.generateConditionLines(template.entryConditions, 'entry');
-    const exitLines = this.generateConditionLines(template.exitConditions, 'exit');
-    const hyperoptSpace = this.generateHyperoptSpace(template);
-
+  /**
+   * 生成完整的 Python 策略文件
+   */
+  private generatePythonCode(
+    config: StrategyConfig,
+    className: string,
+    parameters: ParameterMetadata[]
+  ): string {
     const lines: string[] = [];
 
-    // Shebang and imports
-    lines.push(`#!/usr/bin/env python3`);
-    lines.push(`# -*- coding: utf-8 -*-`);
-    lines.push(`"""`);
-    lines.push(`Auto-generated strategy by OpenClaw Quant Skills.`);
-    lines.push(``);
-    lines.push(`Strategy: ${template.name}`);
-    if (template.description) lines.push(`Description: ${template.description}`);
-    lines.push(`Timeframe: ${template.timeframe}`);
-    if (template.author) lines.push(`Author: ${template.author}`);
-    if (template.version) lines.push(`Version: ${template.version}`);
-    lines.push(`"""`);
-    lines.push(``);
-    lines.push(imports);
-    lines.push(``);
+    // Header
+    lines.push(`# Generated by OpenClaw Quant Trading`);
+    lines.push(`# Strategy: ${config.name}`);
+    if (config.description) {
+      lines.push(`# Description: ${config.description}`);
+    }
+    lines.push(`# Generated: ${new Date().toISOString()}`);
+    lines.push('');
+
+    // Imports
+    lines.push('from datetime import datetime');
+    lines.push('from typing import Dict, List, Optional');
+    lines.push('import pandas as pd');
+    lines.push('import pandas_ta as ta  # fallback if TA-Lib not available');
+    lines.push('from freqtrade.strategy import IStrategy, IntParameter, DecimalParameter, BooleanParameter, CategoricalParameter');
+    lines.push('');
 
     // Class definition
     lines.push(`class ${className}(IStrategy):`);
-    lines.push(`    """${template.description || 'Auto-generated strategy'}"""`);
-    lines.push(``);
-    lines.push(`    # Interface version`);
-    lines.push(`    INTERFACE_VERSION = 3`);
-    lines.push(``);
-    lines.push(`    # Timeframe`);
-    lines.push(`    timeframe = "${template.timeframe}"`);
-    lines.push(``);
-    lines.push(`    # Startup candle count (ensure indicators have enough data)`);
-    lines.push(`    startup_candle_count = ${startupCandles}`);
-    lines.push(``);
+    lines.push(`${StrategyCompiler.INDENT}"""${config.description || config.name}"""`);
+    lines.push('');
 
-    // Parameters
-    if (paramLines) {
-      lines.push(`    # Strategy parameters`);
-      paramLines.split('\n').forEach(l => lines.push(`    ${l}`));
-      lines.push(``);
+    // Class attributes
+    lines.push(`${StrategyCompiler.INDENT}# Strategy configuration`);
+    lines.push(`${StrategyCompiler.INDENT}timeframe = '${config.timeframe}'`);
+    if (config.pair) {
+      lines.push(`${StrategyCompiler.INDENT}pair = '${config.pair}'`);
     }
+    lines.push(`${StrategyCompiler.INDENT}version = '${config.version || '1.0.0'}'`);
+    lines.push('');
 
-    // ROI table
-    lines.push(`    # ROI table`);
-    lines.push(`    minimal_roi = {`);
-    lines.push(`        "60": 0.01,`);
-    lines.push(`        "30": 0.02,`);
-    lines.push(`        "0": 0.04`);
-    lines.push(`    }`);
-    lines.push(``);
-
-    // Stoploss & trailing
-    const stoplossVal = (template.parameters && template.parameters.stoploss) !== undefined ? template.parameters.stoploss : -0.1;
-    lines.push(`    # Stop loss`);
-    lines.push(`    stoploss = ${stoplossVal}`);
-    lines.push(``);
-
-    if (template.parameters && template.parameters.trailing_stop) {
-      lines.push(`    # Trailing stop`);
-      lines.push(`    trailing_stop = True`);
-      lines.push(`    trailing_stop_positive = ${template.parameters.trailing_stop_positive ?? 0.02}`);
-      lines.push(`    trailing_stop_positive_offset = ${template.parameters.trailing_stop_positive_offset ?? 0.04}`);
-      lines.push(``);
-    } else {
-      lines.push(`    # Trailing stop`);
-      lines.push(`    trailing_stop = False`);
-      lines.push(``);
+    // Parameters as class attributes
+    if (parameters.length > 0) {
+      lines.push(`${StrategyCompiler.INDENT}# Hyperopt parameters`);
+      for (const param of parameters) {
+        const pyValue = this.pythonValue(param);
+        const paramClass = this.parameterClass(param.type);
+        lines.push(`${StrategyCompiler.INDENT}${param.name} = ${paramClass}('${param.name}', default=${pyValue})`);
+      }
+      lines.push('');
     }
-
-    lines.push(`    # Process only new candles`);
-    lines.push(`    process_only_new_candles = True`);
-    lines.push(``);
-    lines.push(`    # Order types`);
-    lines.push(`    order_types = {`);
-    lines.push(`        "entry": "limit",`);
-    lines.push(`        "exit": "limit",`);
-    lines.push(`        "stoploss": "market",`);
-    lines.push(`        "stoploss_on_exchange": True,`);
-    lines.push(`    }`);
-    lines.push(``);
 
     // populate_indicators
-    lines.push(`    def populate_indicators(self, dataframe: DataFrame, metadata: Dict) -> DataFrame:`);
-    lines.push(`        """Add technical indicators to the dataframe."""`);
-    if (indicatorLines) {
-      indicatorLines.split('\n').forEach(l => lines.push(`        ${l}`));
-    } else {
-      lines.push(`        # No indicators defined`);
+    lines.push(`${StrategyCompiler.INDENT}def populate_indicators(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:`);
+    lines.push(`${StrategyCompiler.INDENT}${StrategyCompiler.INDENT}"""计算技术指标"""`);
+
+    // 参数引用替换
+    let buyCondition = config.buyCondition;
+    let sellCondition = config.sellCondition;
+
+    for (const param of parameters) {
+      const placeholder = `{{${param.name}}}`;
+      const pyRef = `self.${param.name}.value`;
+      buyCondition = buyCondition.split(placeholder).join(pyRef);
+      sellCondition = sellCondition.split(placeholder).join(pyRef);
     }
-    lines.push(`        return dataframe`);
-    lines.push(``);
 
-    // populate_entry_trend
-    lines.push(`    def populate_entry_trend(self, dataframe: DataFrame, metadata: Dict) -> DataFrame:`);
-    lines.push(`        """Based on TA indicators, populate the entry signal."""`);
-    entryLines.split('\n').forEach(l => lines.push(`        ${l}`));
-    lines.push(`        return dataframe`);
-    lines.push(``);
-
-    // populate_exit_trend
-    lines.push(`    def populate_exit_trend(self, dataframe: DataFrame, metadata: Dict) -> DataFrame:`);
-    lines.push(`        """Based on TA indicators, populate the exit signal."""`);
-    exitLines.split('\n').forEach(l => lines.push(`        ${l}`));
-    lines.push(`        return dataframe`);
-    lines.push(``);
-
-    // informative_pairs
-    lines.push(`    def informative_pairs(self) -> List[Tuple[str, str]]:`);
-    lines.push(`        """Define additional informative pairs for strategy."""`);
-    lines.push(`        return []`);
-    lines.push(``);
-
-    // custom_stoploss
-    lines.push(`    def custom_stoploss(self, pair: str, trade: 'Trade', current_time: datetime, current_rate: float, current_profit: float, **kwargs) -> float:`);
-    lines.push(`        # Custom stoploss logic can be added here`);
-    lines.push(`        return self.stoploss`);
-    lines.push(``);
-
-    // custom_entry
-    lines.push(`    def custom_entry(self, pair: str, current_time: datetime, current_rate: float, **kwargs) -> Tuple[bool, str]:`);
-    lines.push(`        # Custom entry signal can be added here`);
-    lines.push(`        return False, ''`);
-    lines.push(``);
-
-    // custom_exit
-    lines.push(`    def custom_exit(self, pair: str, trade: 'Trade', current_time: datetime, current_rate: float, **kwargs) -> Optional[Tuple[bool, str]]:`);
-    lines.push(`        # Custom exit signal can be added here`);
-    lines.push(`        return None`);
-    lines.push(``);
-
-    // Hyperopt parameters if any
-    if (hyperoptSpace) {
-      lines.push(`    @staticmethod`);
-      lines.push(`    def hyperopt_parameters():`);
-      lines.push(`        return {`);
-      const paramEntries = Object.entries(template.parameters).filter(([_, def]) => {
-        return def && typeof def === 'object' && 'hyperopt' in (def as any);
-      });
-      for (const [name, def] of paramEntries) {
-        const h = (def as any).hyperopt;
-        if (h.type === 'int') {
-          lines.push(`            '${name}': Integer(${h.min}, ${h.max}),`);
-        } else if (h.type === 'float') {
-          lines.push(`            '${name}': Discrete(${h.min}, ${h.max}, step=${h.step || 0.1}),`);
-        } else if (h.type === 'discrete') {
-          const values = h.choices.map((c: any) => JSON.stringify(c)).join(', ');
-          lines.push(`            '${name}': Categorical([${values}]),`);
-        }
+    // 指标计算代码生成
+    if (config.indicators.length > 0) {
+      lines.push(`${StrategyCompiler.INDENT}${StrategyCompiler.INDENT}# Calculate indicators`);
+      for (const indicator of config.indicators) {
+        const code = this.generateIndicatorCode(indicator);
+        lines.push(`${StrategyCompiler.INDENT}${StrategyCompiler.INDENT}${code}`);
       }
-      lines.push(`        }`);
-      lines.push(``);
+      lines.push('');
     }
 
-    // Populate hyperopt params (legacy) if any
-    const populateHyperopt = this.generatePopulateHyperoptParams(template);
-    if (populateHyperopt) {
-      lines.push(populateHyperopt.split('\n').map(l => `    ${l}`).join('\n'));
-      lines.push(``);
-    }
+    lines.push(`${StrategyCompiler.INDENT}${StrategyCompiler.INDENT}return dataframe`);
+    lines.push('');
+
+    // populate_buy_trend
+    lines.push(`${StrategyCompiler.INDENT}def populate_buy_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:`);
+    lines.push(`${StrategyCompiler.INDENT}${StrategyCompiler.INDENT}"""生成买入信号"""`);
+    lines.push(`${StrategyCompiler.INDENT}${StrategyCompiler.INDENT}dataframe['buy'] = (${this.pyExpr(buyCondition)})`);
+    lines.push(`${StrategyCompiler.INDENT}${StrategyCompiler.INDENT}return dataframe`);
+    lines.push('');
+
+    // populate_sell_trend
+    lines.push(`${StrategyCompiler.INDENT}def populate_sell_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:`);
+    lines.push(`${StrategyCompiler.INDENT}${StrategyCompiler.INDENT}"""生成卖出信号"""`);
+    lines.push(`${StrategyCompiler.INDENT}${StrategyCompiler.INDENT}dataframe['sell'] = (${this.pyExpr(sellCondition)})`);
+    lines.push(`${StrategyCompiler.INDENT}${StrategyCompiler.INDENT}return dataframe`);
+    lines.push('');
+
+    // optional: custom_stoploss
+    lines.push(`${StrategyCompiler.INDENT}def custom_stoploss(self, pair: str, trade: 'Trade', current_time: datetime, current_rate: float, current_profit: float, after_fill: bool, **kwargs) -> Optional[float]:`);
+    lines.push(`${StrategyCompiler.INDENT}${StrategyCompiler.INDENT}"""动态止损（可选）"""`);
+    lines.push(`${StrategyCompiler.INDENT}${StrategyCompiler.INDENT}# TODO: 基于参数实现动态止损`);
+    lines.push(`${StrategyCompiler.INDENT}${StrategyCompiler.INDENT}return None`);
+    lines.push('');
 
     return lines.join('\n');
   }
 
-  private generateParameterLines(params: Record<string, any>): string {
-    const lines: string[] = [];
-    for (const [key, value] of Object.entries(params)) {
-      const comment = this.getParameterComment(key);
-      if (comment) {
-        lines.push(`    # ${comment}`);
-      }
-      lines.push(`    ${key} = ${this.toPythonValue(value)}`);
+  /**
+   * 生成指标计算代码
+   */
+  private generateIndicatorCode(indicator: string): string {
+    // 简单映射，实际需要更复杂的代码生成
+    const parts = indicator.toLowerCase().split('_');
+    const funcName = parts[0];
+
+    switch (funcName) {
+      case 'rsi':
+        return `dataframe['rsi'] = ta.rsi(dataframe['close'], length=self.rsi_period)`;
+      case 'ema':
+        return `dataframe['ema'] = ta.ema(dataframe['close'], length=self.ema_period)`;
+      case 'sma':
+        return `dataframe['sma'] = ta.sma(dataframe['close'], length=self.sma_period)`;
+      case 'atr':
+        return `dataframe['atr'] = ta.atr(dataframe['high'], dataframe['low'], dataframe['close'], length=self.atr_period)`;
+      case 'macd':
+        return `macd = ta.macd(dataframe['close'], fast=self.macd_fast, slow=self.macd_slow, signal=self.macd_signal)\ndataframe['macd'] = macd['MACD']\ndataframe['macd_signal'] = macd['MACDs']\ndataframe['macd_hist'] = macd['MACDh']`;
+      case 'bb':
+      case 'bbands':
+        return `bbands = ta.bbands(dataframe['close'], length=self.bb_length, std=self.bb_std)\ndataframe['bb_upper'] = bbands['BBU']\ndataframe['bb_middle'] = bbands['BBM']\ndataframe['bb_lower'] = bbands['BBL']`;
+      default:
+        return `# TODO: implement ${indicator}\nraise NotImplementedError('${indicator} not yet supported')`;
     }
-    return lines.join('\n        ');
-  }
-
-  private getParameterComment(key: string): string {
-    const comments: Record<string, string> = {
-      stoploss: 'Stop loss (negative percentage)',
-      trailing_stop: 'Enable trailing stop',
-      trailing_stop_positive: 'Trailing stop positive offset',
-      trailing_stop_positive_offset: 'Trailing stop positive offset',
-      rsi_period: 'RSI calculation period',
-      ema_fast: 'Fast EMA period',
-      ema_slow: 'Slow EMA period',
-      macd_fast: 'MACD fast EMA period',
-      macd_slow: 'MACD slow EMA period',
-      macd_signal: 'MACD signal period',
-      bbands_period: 'Bollinger Bands period',
-      bbands_std: 'Bollinger Bands standard deviation',
-      atr_period: 'ATR period',
-      roi_step: 'ROI step size',
-    };
-    return comments[key] || '';
-  }
-
-  private generateIndicatorLines(indicators: IndicatorConfig[]): string {
-    const lines: string[] = [];
-    for (const indicator of indicators) {
-      const params = this.formatIndicatorParams(indicator);
-      const output = indicator.output;
-
-      switch (indicator.function.toUpperCase()) {
-        case 'RSI':
-          lines.push(`        dataframe['${output}'] = ta.RSI(dataframe, timeperiod=${params.timeperiod})`);
-          break;
-        case 'EMA':
-          lines.push(`        dataframe['${output}'] = ta.EMA(dataframe, timeperiod=${params.timeperiod})`);
-          break;
-        case 'SMA':
-          lines.push(`        dataframe['${output}'] = ta.SMA(dataframe, timeperiod=${params.timeperiod})`);
-          break;
-        case 'MACD':
-          lines.push(`        macd = ta.MACD(dataframe, fastperiod=${params.fastperiod}, slowperiod=${params.slowperiod}, signalperiod=${params.signalperiod})`);
-          lines.push(`        dataframe['${output}'] = macd['macd']`);
-          break;
-        case 'ATR':
-          lines.push(`        dataframe['${output}'] = ta.ATR(dataframe, timeperiod=${params.timeperiod})`);
-          break;
-        case 'BBANDS':
-          lines.push(`        bbands = ta.BBANDS(dataframe, timeperiod=${params.timeperiod}, nbdevup=${params.nbdevup}, nbdevdn=${params.nbdevdn})`);
-          lines.push(`        dataframe['${output}_lower'] = bbands['lowerband']`);
-          lines.push(`        dataframe['${output}_upper'] = bbands['upperband']`);
-          break;
-        case 'VWAP':
-          lines.push(`        dataframe['${output}'] = (dataframe['volume'] * (dataframe['high'] + dataframe['low'] + dataframe['close']) / 3).cumsum() / dataframe['volume'].cumsum()`);
-          break;
-        case 'OBV':
-          lines.push(`        dataframe['${output}'] = ta.OBV(dataframe)`);
-          break;
-        case 'STOCH':
-          lines.push(`        stoch = ta.STOCH(dataframe, fastk_period=${params.timeperiod}, slowk_period=${params.slowk_period || 3}, slowd_period=${params.slowd_period || 3}, slowk_matype=0, slowd_matype=0)`);
-          lines.push(`        dataframe['${output}_k'] = stoch['slowk']`);
-          lines.push(`        dataframe['${output}_d'] = stoch['slowd']`);
-          break;
-        case 'ADX':
-          lines.push(`        dataframe['${output}'] = ta.ADX(dataframe, timeperiod=${params.timeperiod})`);
-          break;
-        case 'CCI':
-          lines.push(`        dataframe['${output}'] = ta.CCI(dataframe, timeperiod=${params.timeperiod})`);
-          break;
-        default:
-          this.logger.warn(`Unknown indicator: ${indicator.function}, skipping`);
-      }
-    }
-    return lines.join('\n');
   }
 
   /**
-   * 生成条件表达式 (支持 Condition 数组或 ConditionNode 树)
+   * 将参数值转换为 Python literal
    */
-  private generateConditionLines(conditions: (Condition | ConditionNode)[], type: 'entry' | 'exit'): string {
-    if (conditions.length === 0) {
-      return `        dataframe.loc[:, '${type}_long'] = 0`;
+  private pythonValue(param: ParameterMetadata): any {
+    if ((param as any).default !== undefined) {
+      return (param as any).default;
     }
 
-    // 将数组转换为统一的条件树
-    const rootNode: ConditionNode = conditions.length === 1 && (conditions[0] as ConditionNode).type === 'group'
-      ? (conditions[0] as ConditionNode)
-      : {
-          type: 'group',
-          logic: 'AND',
-          children: conditions.map(cond => 
-            (cond as ConditionNode).type === 'condition' || !(cond as ConditionNode).type
-              ? { type: 'condition', condition: cond as Condition }
-              : cond as ConditionNode
-          )
-        };
-
-    const conditionStr = this.generateConditionTree(rootNode);
-    const action = type === 'entry' ? 'enter_long' : 'exit_long';
-    return `        dataframe.loc[${conditionStr}, '${action}'] = 1`;
+    // 基于类型提供默认值
+    switch (param.type) {
+      case 'integer':
+        return 0;
+      case 'decimal':
+        return 0.0;
+      case 'boolean':
+        return 'False';
+      case 'categorical':
+        return `'${(param as any).options[0]}'`;
+      default:
+        return 'None';
+    }
   }
 
   /**
-   * 递归生成条件树表达式
+   * Python 参数类名
    */
-  private generateConditionTree(node: ConditionNode): string {
-    if (node.type === 'condition' && node.condition) {
-      const cond = node.condition;
-      const left = `dataframe['${cond.left}']`;
-      const right = cond.rightIsColumn ? `dataframe['${cond.right}']` : cond.right;
-      return `${left} ${cond.operator} ${right}`;
+  private parameterClass(type: string): string {
+    switch (type) {
+      case 'integer':
+        return 'IntParameter';
+      case 'decimal':
+        return 'DecimalParameter';
+      case 'boolean':
+        return 'BooleanParameter';
+      case 'categorical':
+        return 'CategoricalParameter';
+      default:
+        return 'IntParameter';
     }
-
-    if (node.type === 'group' && node.children) {
-      const operator = node.logic || 'AND';
-      const childExprs = node.children.map(child => this.generateConditionTree(child));
-      // Add parentheses around each child except when it's already a single condition
-      const wrapped = childExprs.map(expr => {
-        // If expression already contains spaces (likely a binary op), wrap in parens
-        return `(${expr})`;
-      });
-      return wrapped.join(` ${operator} `);
-    }
-
-    return 'True'; // Fallback
   }
 
-  private calculateStartupCandles(indicators: IndicatorConfig[]): number {
-    // Find max period among all indicators
-    let maxPeriod = 50; // Default
-    for (const indicator of indicators) {
-      const period = indicator.params.timeperiod || indicator.params.fastperiod || 0;
-      if (period > maxPeriod) {
-        maxPeriod = period;
-      }
-    }
-    return maxPeriod + 10; // Extra buffer
+  /**
+   * 简单 Python 表达式格式化
+   * 将 user condition (e.g., "rsi < 30") 包装为 pandas 布尔表达式
+   */
+  private pyExpr(expr: string): string {
+    // 目前直接返回，假设用户已提供正确的 pandas 表达式
+    // 可扩展：变量名自动添加 'dataframe[' 前缀和 ']' 后缀
+    return expr;
   }
 
-  private formatIndicatorParams(indicator: IndicatorConfig): Record<string, number> {
-    const defaults: Record<string, number> = {
-      timeperiod: 14,
-      fastperiod: 12,
-      slowperiod: 26,
-      signalperiod: 9,
-      nbdevup: 2,
-      nbdevdn: 2,
-    };
-    return { ...defaults, ...indicator.params };
-  }
-
-  private toPascalCase(str: string): string {
+  /**
+   * CamelCase 转换
+   */
+  private toCamelCase(str: string, pascal: boolean = false): string {
     return str
-      .split(/[-_]/)
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .split(/[-_\s]+/)
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
       .join('');
   }
-
-  private toSnakeCase(str: string): string {
-    return str
-      .replace(/[- ]+/g, '_')
-      .replace(/[A-Z]/g, (match) => `_${match.toLowerCase()}`)
-      .replace(/^_/, '');
-  }
-
-  private toPythonValue(value: any): string {
-    if (typeof value === 'string') {
-      return `"${value}"`;
-    }
-    if (typeof value === 'boolean') {
-      return value ? 'True' : 'False';
-    }
-    if (typeof value === 'number') {
-      return value.toString();
-    }
-    return JSON.stringify(value);
-  }
-
-  /**
-   * 生成 Hyperopt 参数空间定义 (可选)
-   */
-  private generateHyperoptSpace(template: StrategyTemplate): string | null {
-    const paramEntries = Object.entries(template.parameters).filter(([_, def]) => {
-      return def && typeof def === 'object' && 'hyperopt' in (def as any);
-    });
-
-    if (paramEntries.length === 0) {
-      return null;
-    }
-
-    const lines: string[] = [];
-    lines.push(`    @staticmethod`);
-    lines.push(`    def hyperopt_params():`);
-    lines.push(`        return {`);
-
-    for (const [name, def] of paramEntries) {
-      const h = (def as any).hyperopt;
-      const defaultVal = (def as any).default !== undefined ? this.toPythonValue((def as any).default) : 'None';
-      switch (h.type) {
-        case 'int':
-          lines.push(`            '${name}': {'type': 'integer', 'min': ${h.min}, 'max': ${h.max}, 'step': ${h.step || 1}, 'default': ${defaultVal}},`);
-          break;
-        case 'float':
-          lines.push(`            '${name}': {'type': 'float', 'min': ${h.min}, 'max': ${h.max}, 'step': ${h.step || 0.1}, 'default': ${defaultVal}},`);
-          break;
-        case 'discrete':
-          const choices = h.choices.map((c: any) => this.toPythonValue(c)).join(', ');
-          lines.push(`            '${name}': {'type': 'discrete', 'values': [${choices}], 'default': ${defaultVal}},`);
-          break;
-      }
-    }
-
-    lines.push(`        }`);
-    return lines.join('\n');
-  }
-
-  /**
-   * 生成 populate_hyperopt_params 方法 (旧版 hyperopt 接口)
-   */
-  private generatePopulateHyperoptParams(template: StrategyTemplate): string | null {
-    const paramEntries = Object.entries(template.parameters).filter(([_, def]) => {
-      return def && typeof def === 'object' && 'hyperopt' in (def as any);
-    });
-
-    if (paramEntries.length === 0) {
-      return null;
-    }
-
-    const lines: string[] = [];
-    lines.push(`    @staticmethod`);
-    lines.push(`    def populate_hyperopt_params():`);
-    lines.push(`        return {`);
-    for (const [name, def] of paramEntries) {
-      const defaultVal = (def as any).default !== undefined ? this.toPythonValue((def as any).default) : 'None';
-      lines.push(`            '${name}': ${defaultVal},`);
-    }
-    lines.push(`        }`);
-    return lines.join('\n');
-  }
-
-  private generateImports(template: StrategyTemplate): string[] {
-    const imports = [
-      'from datetime import datetime',
-      'from typing import Dict, Tuple, List, Optional',
-      'import pandas as pd',
-      'import talib.abstract as ta',
-      'import freqtrade.vendor.qtpylib.indicators as qtpylib',
-      'from freqtrade.strategy import IStrategy, informative',
-      'from freqtrade.strategy.interface import SellType',
-      'from pandas import DataFrame',
-    ];
-    // Add hyperopt import if needed
-    const hasHyperopt = Object.values(template.parameters).some(def => 
-      def && typeof def === 'object' && 'hyperopt' in (def as any)
-    );
-    if (hasHyperopt) {
-      imports.push('from freqtrade.optimize.space import Integer, Discrete, Categorical');
-    }
-    return imports;
-  }
 }
 
-// Singleton
-let compiler: StrategyCompiler | null = null;
-
-export function getStrategyCompiler(): StrategyCompiler {
-  if (!compiler) {
-    compiler = new StrategyCompiler();
-  }
-  return compiler;
-}
-
-// Convenience function
-export function compileStrategy(template: StrategyTemplate): CompiledStrategy {
-  return getStrategyCompiler().compile(template);
+/**
+ * 便捷函数：编译策略
+ */
+export function compileStrategy(config: StrategyConfig): CompileResult {
+  const compiler = new StrategyCompiler();
+  return compiler.compile(config);
 }

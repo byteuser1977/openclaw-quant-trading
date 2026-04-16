@@ -1,364 +1,477 @@
 /**
  * Strategy Validator
- *
- * Validates strategy templates and compiled Python code.
- * Checks: required methods, indicator dependencies, parameter definitions.
+ * 验证策略配置的完整性、语法正确性、逻辑一致性
  */
 
-import { StrategyTemplate, Condition, ConditionNode } from './compiler';
-import { IndicatorConfig } from './indicators';
 import { getLogger } from '../../core/logger';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
-import { tmpdir } from 'os';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 
 const execAsync = promisify(exec);
+const logger = getLogger('strategy-validator');
 
+/**
+ * 验证错误项
+ */
+export interface ValidationError {
+  code: string;
+  message: string;
+  severity: 'error' | 'warning';
+  location?: string; // e.g., 'buyCondition', 'indicators[2]'
+}
+
+/**
+ * 验证结果
+ */
 export interface ValidationResult {
   valid: boolean;
-  errors: StrategyValidationError[];
-  warnings: StrategyValidationWarning[];
-  metrics: ValidationMetrics;
+  errors: ValidationError[];
+  warnings: ValidationError[];
+  metadata?: {
+    checkedAt: string;
+    durationMs: number;
+  };
 }
 
-export interface StrategyValidationError {
-  line?: number;
-  message: string;
-  severity: 'error';
-  code: string;
-}
-
-export interface StrategyValidationWarning {
-  line?: number;
-  message: string;
-  severity: 'warning';
-  code: string;
-}
-
-export interface ValidationMetrics {
-  indicatorsCount: number;
-  parametersCount: number;
-  entryConditions: number;
-  exitConditions: number;
-  complexityScore: number; // 0-100
-}
-
-// Type guard for Condition (plain condition objects do NOT have a 'type' property)
-function isCondition(obj: Condition | ConditionNode): obj is Condition {
-  return !(obj as any).type;
-}
-
-// Extract condition from node (either standalone or within group)
-function getConditionFromNode(node: Condition | ConditionNode): Condition | null {
-  if (isCondition(node)) {
-    // Plain condition object, return it directly
-    return node;
-  }
-  // For ConditionNode with type 'condition', return its condition property
-  if (node.type === 'condition' && node.condition) {
-    return node.condition;
-  }
-  return null;
-}
-
-// Flatten conditions (including nested groups)
-function flattenConditions(conditions: (Condition | ConditionNode)[]): Condition[] {
-  const result: Condition[] = [];
-
-  function traverse(node: Condition | ConditionNode) {
-    if (isCondition(node)) {
-      // Plain condition
-      result.push(node);
-    } else {
-      // ConditionNode
-      if (node.type === 'condition' && node.condition) {
-        result.push(node.condition);
-      }
-      if (node.type === 'group' && node.children) {
-        node.children.forEach(traverse);
-      }
-    }
-  }
-
-  conditions.forEach(traverse);
-  return result;
-}
-
+/**
+ * 策略验证器
+ *
+ * 检测项目:
+ * - 配置完整性 (必需字段)
+ * - 参数引用正确性
+ * - 指标依赖存在
+ * - Python 语法有效性
+ * - 代码安全性 (危险函数)
+ */
 export class StrategyValidator {
-  private logger: any = getLogger('validator');
+  private requiredMethods = [
+    'populate_indicators',
+    'populate_buy_trend',
+    'populate_sell_trend'
+  ];
 
-  async validateTemplate(template: StrategyTemplate): Promise<ValidationResult> {
-    const errors: StrategyValidationError[] = [];
-    const warnings: StrategyValidationWarning[] = [];
+  private forbiddenFunctions = [
+    'eval',
+    'exec',
+    '__import__',
+    'open',
+    'file',
+    'input',
+    'raw_input'
+  ];
 
-    // 1. Basic required fields
-    if (!template.name || template.name.trim().length === 0) {
-      errors.push({ message: 'Strategy name is required', severity: 'error', code: 'VAL_001' });
-    }
-    if (!template.timeframe) {
-      errors.push({ message: 'Timeframe is required', severity: 'error', code: 'VAL_002' });
-    } else if (!/^[0-9]+[mhdw]$/.test(template.timeframe)) {
-      errors.push({ message: `Invalid timeframe format: ${template.timeframe}. Use e.g., '5m', '1h', '1d'`, severity: 'error', code: 'VAL_003' });
-    }
+  /**
+   * 验证策略配置
+   */
+  async validate(config: {
+    name: string;
+    className: string;
+    parameters: any[];
+    indicators: string[];
+    buyCondition: string;
+    sellCondition: string;
+    timeframe: string;
+  }): Promise<ValidationResult> {
+    const startTime = Date.now();
+    const errors: ValidationError[] = [];
+    const warnings: ValidationError[] = [];
 
-    // 2. Indicators validation
-    if (template.indicators.length === 0) {
-      errors.push({ message: 'At least one indicator is required', severity: 'error', code: 'VAL_004' });
-    } else {
-      for (const ind of template.indicators) {
-        if (!ind.name) {
-          errors.push({ message: 'Indicator missing name', severity: 'error', code: 'VAL_005' });
-        }
-        if (!ind.function) {
-          errors.push({ message: `Indicator ${ind.name} missing function`, severity: 'error', code: 'VAL_006' });
-        }
-        if (!ind.output) {
-          errors.push({ message: `Indicator ${ind.name} missing output column`, severity: 'error', code: 'VAL_007' });
-        }
-        if (Object.keys(ind.params).length === 0) {
-          warnings.push({ message: `Indicator ${ind.name} has no parameters`, severity: 'warning', code: 'VAL_W01' });
-        }
-      }
-    }
+    // 1. 基础配置检查
+    this.validateBasicConfig(config, errors);
 
-    // 3. Entry/Exit conditions validation (flatten to Condition[])
-    this.validateConditionList(template.entryConditions, 'entry', errors, warnings);
-    this.validateConditionList(template.exitConditions, 'exit', errors, warnings);
+    // 2. 参数引用检查
+    await this.validateParameterReferences(config, errors);
 
-    // 4. Check for undefined indicator references in conditions
-    const indicatorOutputs = new Set(template.indicators.map((i) => i.output));
-    const flatEntry = flattenConditions(template.entryConditions);
-    const flatExit = flattenConditions(template.exitConditions);
-    const allConditions = [...flatEntry, ...flatExit];
+    // 3. 指标依赖检查
+    this.validateIndicators(config, errors, warnings);
 
-    for (const cond of allConditions) {
-      if (!indicatorOutputs.has(cond.left) && cond.left !== 'open' && cond.left !== 'high' &&
-          cond.left !== 'low' && cond.left !== 'close' && cond.left !== 'volume') {
-        warnings.push({
-          message: `Condition references undefined indicator/column: ${cond.left}`,
-          severity: 'warning',
-          code: 'VAL_W02',
-        });
-      }
-      if (cond.rightIsColumn && !indicatorOutputs.has(cond.right as string)) {
-        warnings.push({
-          message: `Condition compares to undefined indicator/column: ${cond.right}`,
-          severity: 'warning',
-          code: 'VAL_W03',
-        });
-      }
-    }
+    // 4. 条件表达式检查
+    this.validateConditions(config, errors, warnings);
 
-    // 5. Parameter validation
-    const paramErrors = this.validateParameters(template.parameters);
-    errors.push(...paramErrors);
+    // 5. Python 语法验证 (如果生成了代码)
+    // 这里假设我们先用 validatePythonCode 验证空模板
+    // 实际使用时在 compile 后验证
 
-    // Calculate metrics
-    const metrics: ValidationMetrics = {
-      indicatorsCount: template.indicators.length,
-      parametersCount: Object.keys(template.parameters).length,
-      entryConditions: flatEntry.length,
-      exitConditions: flatExit.length,
-      complexityScore: this.calculateComplexity(template),
-    };
+    // 6. 安全性检查
+    this.validateSecurity(config, warnings);
+
+    const duration = Date.now() - startTime;
 
     return {
       valid: errors.length === 0,
       errors,
       warnings,
-      metrics,
+      metadata: {
+        checkedAt: new Date().toISOString(),
+        durationMs: duration
+      }
     };
   }
 
-  async validatePythonCode(pythonCode: string): Promise<ValidationResult> {
-    const errors: StrategyValidationError[] = [];
-    const warnings: StrategyValidationWarning[] = [];
+  /**
+   * 基础配置验证
+   */
+  private validateBasicConfig(
+    config: any,
+    errors: ValidationError[]
+  ): void {
+    if (!config.name || config.name.trim().length === 0) {
+      errors.push({
+        code: 'MISSING_NAME',
+        message: 'Strategy name is required',
+        severity: 'error',
+        location: 'name'
+      });
+    }
 
-    // 1. Syntax check using Python compiler
-    try {
-      const tempDir = tmpdir();
-      const tempFile = path.join(tempDir, `strategy_${Date.now()}.py`);
-      fs.writeFileSync(tempFile, pythonCode);
+    if (!config.timeframe) {
+      errors.push({
+        code: 'MISSING_TIMEFRAME',
+        message: 'Timeframe is required (e.g., "5m", "1h")',
+        severity: 'error',
+        location: 'timeframe'
+      });
+    } else if (!this.isValidTimeframe(config.timeframe)) {
+      errors.push({
+        code: 'INVALID_TIMEFRAME',
+        message: `Timeframe '${config.timeframe}' is not valid`,
+        severity: 'error',
+        location: 'timeframe'
+      });
+    }
 
-      try {
-        await execAsync('python -m py_compile ' + tempFile);
-      } finally {
-        if (fs.existsSync(tempFile)) {
-          fs.unlinkSync(tempFile);
+    if (!config.buyCondition) {
+      errors.push({
+        code: 'MISSING_BUY_CONDITION',
+        message: 'Buy condition is required',
+        severity: 'error',
+        location: 'buyCondition'
+      });
+    }
+
+    if (!config.sellCondition) {
+      errors.push({
+        code: 'MISSING_SELL_CONDITION',
+        message: 'Sell condition is required',
+        severity: 'error',
+        location: 'sellCondition'
+      });
+    }
+  }
+
+  /**
+   * 验证参数引用
+   */
+  private async validateParameterReferences(
+    config: any,
+    errors: ValidationError[]
+  ): Promise<void> {
+    const paramNames = config.parameters ? config.parameters.map((p: any) => p.name) : [];
+    const knownIndicators = new Set(['RSI', 'EMA', 'SMA', 'WMA', 'MACD', 'ATR', 'BollingerBands', 'Stochastic', 'ADX', 'OBV', 'CCI', 'ROC'].map(i => i.toLowerCase()));
+
+    const validateCondition = (condition: string, location: string) => {
+      if (!condition) return;
+      const usedVars = this.extractVariableNames(condition);
+      for (const varName of usedVars) {
+        const lowerVarName = varName.toLowerCase();
+        // Skip if it's a known indicator
+        if (knownIndicators.has(lowerVarName)) continue;
+        // Check if it's a known parameter
+        if (!paramNames.includes(varName)) {
+          errors.push({
+            code: 'UNKNOWN_PARAMETER',
+            message: `${location} uses unknown parameter '${varName}'`,
+            severity: 'error',
+            location
+          });
         }
       }
-    } catch (error: any) {
-      // Parse Python syntax error
-      const match = error.stderr?.match(/.*?line (\d+).*?:\s*(.+)/);
-      if (match) {
-        const line = parseInt(match[1], 10);
-        const message = match[2].trim();
-        errors.push({ line, message, severity: 'error', code: 'PY_SYNTAX' });
-      } else {
-        errors.push({ message: 'Python syntax error', severity: 'error', code: 'PY_SYNTAX' });
-      }
-      return {
-        valid: false,
-        errors,
-        warnings,
-        metrics: { indicatorsCount: 0, parametersCount: 0, entryConditions: 0, exitConditions: 0, complexityScore: 0 },
-      };
-    }
-
-    // 2. Check for required methods
-    const requiredMethods = ['populate_indicators', 'populate_entry_trend', 'populate_exit_trend'];
-    for (const method of requiredMethods) {
-      if (!pythonCode.includes(`def ${method}(self`)) {
-        errors.push({
-          message: `Missing required method: ${method}`,
-          severity: 'error',
-          code: 'VAL_008',
-        });
-      }
-    }
-
-    // 3. Check for IStrategy inheritance
-    if (!pythonCode.includes('class') || !pythonCode.includes('IStrategy')) {
-      warnings.push({
-        message: 'Strategy class should inherit from IStrategy',
-        severity: 'warning',
-        code: 'VAL_W04',
-      });
-    }
-
-    // 4. Check for common mistakes
-    if (pythonCode.includes('dataframe.loc[:,') && !pythonCode.includes('dataframe.loc[')) {
-      warnings.push({
-        message: 'Consider using vectorized operations instead of .loc for better performance',
-        severity: 'warning',
-        code: 'VAL_W05',
-      });
-    }
-
-    // 5. Check for TODO or FIXME comments
-    const todoMatches = pythonCode.matchAll(/# (TODO|FIXME): (.+)/g);
-    for (const match of todoMatches) {
-      warnings.push({
-        message: ` TODO/FIXME: ${match[2]}`,
-        severity: 'warning',
-        code: 'VAL_W06',
-      });
-    }
-
-    // 6. Estimate complexity (basic metrics)
-    const lines = pythonCode.split('\n').filter((l) => l.trim() && !l.trim().startsWith('#'));
-    const complexityScore = Math.min(100, lines.length / 2);
-
-    const metrics: ValidationMetrics = {
-      indicatorsCount: (pythonCode.match(/ta\.\w+\(/g) || []).length,
-      parametersCount: (pythonCode.match(/^    \w+ = /gm) || []).length,
-      entryConditions: (pythonCode.match(/enter_long/g) || []).length,
-      exitConditions: (pythonCode.match(/exit_long/g) || []).length,
-      complexityScore,
     };
 
-    return {
-      valid: errors.length === 0,
-      errors,
-      warnings,
-      metrics,
-    };
+    validateCondition(config.buyCondition, 'buyCondition');
+    validateCondition(config.sellCondition, 'sellCondition');
   }
 
-  async validate(template: StrategyTemplate, pythonCode?: string): Promise<ValidationResult> {
-    const templateResult = await this.validateTemplate(template);
-    if (pythonCode) {
-      const pythonResult = await this.validatePythonCode(pythonCode);
-      return {
-        valid: templateResult.valid && pythonResult.valid,
-        errors: [...templateResult.errors, ...pythonResult.errors],
-        warnings: [...templateResult.warnings, ...pythonResult.warnings],
-        metrics: pythonResult.metrics,
-      };
-    }
-    return templateResult;
+  /**
+   * 提取条件表达式中的变量名 (e.g., "rsi < 30 and ema > close" -> ['rsi', 'ema', 'close'])
+   */
+  private extractVariableNames(expr: string): string[] {
+    // 简单正则：匹配字母数字下划线开头的标识符
+    const regex = /\b([a-zA-Z_][a-zA-Z0-9_]*)\b/g;
+    const matches = expr.match(regex) || [];
+    // 过滤掉 Python 关键字和常见内置函数
+    const keywords = ['and', 'or', 'not', 'if', 'else', 'True', 'False', 'None', 'len', 'range'];
+    return [...new Set(matches)].filter(m => !keywords.includes(m) && !m.startsWith('self.'));
   }
 
-  private validateConditionList(conditions: (Condition | ConditionNode)[], type: 'entry' | 'exit', errors: StrategyValidationError[], warnings: StrategyValidationWarning[]): void {
-    const flat = flattenConditions(conditions);
-
-    if (flat.length === 0) {
+  /**
+   * 验证指标定义
+   */
+  private validateIndicators(
+    config: any,
+    errors: ValidationError[],
+    warnings: ValidationError[]
+  ): void {
+    if (!config.indicators || config.indicators.length === 0) {
       warnings.push({
-        message: `No ${type} conditions defined`,
+        code: 'NO_INDICATORS',
+        message: 'No indicators defined',
         severity: 'warning',
-        code: 'VAL_W07',
+        location: 'indicators'
       });
       return;
     }
 
-    for (let i = 0; i < flat.length; i++) {
-      const cond = flat[i];
-      if (!cond.left) {
-        errors.push({ message: `Condition ${i + 1} missing left operand`, severity: 'error', code: 'VAL_009' });
-      }
-      if (!cond.operator) {
-        errors.push({ message: `Condition ${i + 1} missing operator`, severity: 'error', code: 'VAL_010' });
-      } else {
-        const validOps = ['<', '<=', '>', '>=', '==', '!='];
-        if (!validOps.includes(cond.operator)) {
-          errors.push({ message: `Condition ${i + 1} has invalid operator: ${cond.operator}`, severity: 'error', code: 'VAL_011' });
-        }
-      }
-      if (cond.right === undefined) {
-        errors.push({ message: `Condition ${i + 1} missing right operand`, severity: 'error', code: 'VAL_012' });
-      }
+    const knownIndicators = [
+      'RSI', 'EMA', 'SMA', 'WMA', 'MACD', 'ATR',
+      'BollingerBands', 'Stochastic', 'ADX', 'OBV', 'CCI', 'ROC'
+    ];
 
-      // Skip logic warning for flattened list; original grouping determines logic
-    }
-  }
-
-  private validateParameters(params: Record<string, any>): StrategyValidationError[] {
-    const errors: StrategyValidationError[] = [];
-    const reserved = ['timeframe', 'startup_candle_count', 'INTERFACE_VERSION', 'minimal_roi', 'stoploss'];
-    for (const key of Object.keys(params)) {
-      if (reserved.includes(key) && typeof params[key] === 'undefined') {
-        errors.push({
-          message: `Parameter "${key}" shadows reserved attribute and is undefined`,
-          severity: 'error',
-          code: 'VAL_013',
+    for (const indicator of config.indicators) {
+      if (!knownIndicators.includes(indicator)) {
+        warnings.push({
+          code: 'UNKNOWN_INDICATOR',
+          message: `Indicator '${indicator}' is not in the known list`,
+          severity: 'warning',
+          location: 'indicators'
         });
       }
     }
-    return errors;
   }
 
-  private calculateComplexity(template: StrategyTemplate): number {
-    const indicatorComplexity = template.indicators.length * 10;
-    const conditionComplexity = flattenConditions(template.entryConditions).length + flattenConditions(template.exitConditions).length * 5;
-    const paramComplexity = Object.keys(template.parameters).length * 2;
-    const total = indicatorComplexity + conditionComplexity + paramComplexity;
-    return Math.min(100, Math.round(total / 3));
+  /**
+   * 验证条件表达式
+   */
+  private validateConditions(
+    config: any,
+    errors: ValidationError[],
+    warnings: ValidationError[]
+  ): void {
+    // Check for empty conditions
+    if (config.buyCondition && config.buyCondition.trim().length === 0) {
+      errors.push({
+        code: 'EMPTY_BUY_CONDITION',
+        message: 'Buy condition is empty',
+        severity: 'error',
+        location: 'buyCondition'
+      });
+    }
+
+    if (config.sellCondition && config.sellCondition.trim().length === 0) {
+      errors.push({
+        code: 'EMPTY_SELL_CONDITION',
+        message: 'Sell condition is empty',
+        severity: 'error',
+        location: 'sellCondition'
+      });
+    }
+
+    // Check for common mistakes
+    for (const [type, condition] of [['buy', config.buyCondition], ['sell', config.sellCondition]]) {
+      if (condition) {
+        // Check for assignment (=) instead of comparison (==, <, >)
+        if (condition.includes('=') && !condition.includes('==') && !condition.includes('>=') && !condition.includes('<=')) {
+          warnings.push({
+            code: 'POSSIBLE_ASSIGNMENT',
+            message: `${type} condition contains '=' but not '==', '>=', or '<='. Did you mean comparison?`,
+            severity: 'warning',
+            location: `${type}Condition`
+          });
+        }
+
+        // Check missing return value (should produce boolean series)
+        if (!condition.includes('dataframe') && !condition.includes('[')) {
+          warnings.push({
+            code: 'CONDITION_STYLE',
+            message: `${type} condition doesn't reference dataframe column directly. Ensure it returns boolean Series.`,
+            severity: 'warning',
+            location: `${type}Condition`
+          });
+        }
+      }
+    }
   }
 
-  static analyzeCode(code: string): { hasEntry: boolean; hasExit: boolean; indicatorCount: number } {
-    const hasEntry = code.includes('enter_long') || code.includes('buy');
-    const hasExit = code.includes('exit_long') || code.includes('sell');
-    const indicatorCount = (code.match(/ta\.\w+\(/g) || []).length;
-    return { hasEntry, hasExit, indicatorCount };
+  /**
+   * 安全性检查
+   */
+  private validateSecurity(
+    config: any,
+    warnings: ValidationError[]
+  ): void {
+    const allCode = [config.buyCondition, config.sellCondition].join('\n');
+
+    for (const forbidden of this.forbiddenFunctions) {
+      if (allCode.includes(forbidden)) {
+        warnings.push({
+          code: 'FORBIDDEN_FUNCTION',
+          message: `Use of forbidden function '${forbidden}' detected`,
+          severity: 'warning',
+          location: 'conditions'
+        });
+      }
+    }
+  }
+
+  /**
+   * 验证 Python 代码语法
+   */
+  async validatePythonSyntax(code: string): Promise<ValidationResult> {
+    const errors: ValidationError[] = [];
+    const warnings: ValidationError[] = [];
+
+    // Write to temp file
+    const tempDir = path.join(__dirname, '../../.tmp');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+
+    const tempFile = path.join(tempDir, `strategy_${Date.now()}.py`);
+    try {
+      fs.writeFileSync(tempFile, code, 'utf-8');
+
+      // Try to compile
+      try {
+        await execAsync(`python -m py_compile "${tempFile}"`, { timeout: 10000 });
+      } catch (error: any) {
+        const message = this.parsePythonError(error.stdout || error.stderr || error.message);
+        errors.push({
+          code: 'PYTHON_SYNTAX_ERROR',
+          message,
+          severity: 'error',
+          location: 'generated_code'
+        });
+      }
+
+      // Optional: try to import the module (requires freqtrade in PYTHONPATH)
+      // Skipping for now as it's heavy
+
+    } catch (err: any) {
+      errors.push({
+        code: 'FILE_ERROR',
+        message: `Failed to write/validate temp file: ${err.message}`,
+        severity: 'error'
+      });
+    } finally {
+      // Cleanup
+      try {
+        if (fs.existsSync(tempFile)) {
+          fs.unlinkSync(tempFile);
+        }
+      } catch (e) {
+        // Ignore cleanup errors
+      }
+    }
+
+    return {
+      valid: errors.length === 0,
+      errors,
+      warnings,
+      metadata: {
+        checkedAt: new Date().toISOString(),
+        durationMs: 0
+      }
+    };
+  }
+
+  /**
+   * 解析 Python 编译错误，提取友好信息
+   */
+  private parsePythonError(errorText: string): string {
+    const lines = errorText.split('\n');
+    const relevant: string[] = [];
+
+    for (const line of lines) {
+      if (line.includes('SyntaxError') || line.includes('IndentationError') || line.includes('TabError')) {
+        relevant.push(line.trim());
+      } else if (line.includes('^') || line.includes('caret')) {
+        relevant.push(line.trim());
+      }
+    }
+
+    return relevant.length > 0 ? relevant.join('\n') : errorText;
+  }
+
+  /**
+   * 验证 Freqtrade 策略接口完整性
+   */
+  validateFreqtradeInterface(className: string, code: string): ValidationResult {
+    const errors: ValidationError[] = [];
+    const warnings: ValidationError[] = [];
+
+    // Check class inherits from IStrategy
+    if (!code.includes('IStrategy')) {
+      errors.push({
+        code: 'MISSING_ISTRATEGY',
+        message: `Strategy class must inherit from IStrategy`,
+        severity: 'error',
+        location: 'class_definition'
+      });
+    }
+
+    // Check required methods exist
+    for (const method of this.requiredMethods) {
+      if (!code.includes(`def ${method}(`)) {
+        errors.push({
+          code: 'MISSING_METHOD',
+          message: `Required method '${method}' not found`,
+          severity: 'error',
+          location: 'class_body'
+        });
+      }
+    }
+
+    // Check timeframe is set
+    if (!code.includes('timeframe =')) {
+      warnings.push({
+        code: 'MISSING_TIMEFRAME_ATTR',
+        message: 'Class attribute "timeframe" not set',
+        severity: 'warning',
+        location: 'class_body'
+      });
+    }
+
+    return {
+      valid: errors.length === 0,
+      errors,
+      warnings,
+      metadata: {
+        checkedAt: new Date().toISOString(),
+        durationMs: 0
+      }
+    };
+  }
+
+  /**
+   * 辅助: 验证 timeframe 格式
+   */
+  private isValidTimeframe(tf: string): boolean {
+    // Freqtrade timeframe: number + unit (m, h, d)
+    return /^\d+[mhd]$/.test(tf);
   }
 }
 
-// Singleton
-let validator: StrategyValidator | null = null;
+/**
+ * 便捷验证函数
+ */
+export async function validateStrategy(config: any, compiledCode?: string): Promise<ValidationResult> {
+  const validator = new StrategyValidator();
 
-export function getStrategyValidator(): StrategyValidator {
-  if (!validator) {
-    validator = new StrategyValidator();
+  // 1. 验证配置结构
+  const result = await validator.validate(config);
+  if (!result.valid) {
+    return result;
   }
-  return validator;
-}
 
-export async function validateStrategy(template: StrategyTemplate, pythonCode?: string): Promise<ValidationResult> {
-  return getStrategyValidator().validate(template, pythonCode);
-}
+  // 2. 如果提供了编译代码，验证 Python 语法
+  if (compiledCode) {
+    const pyResult = await validator.validatePythonSyntax(compiledCode);
+    result.errors.push(...pyResult.errors);
+    result.warnings.push(...pyResult.warnings);
+    result.valid = result.errors.length === 0;
+  }
 
-export function quickValidateCode(code: string): { hasEntry: boolean; hasExit: boolean; indicatorCount: number } {
-  return StrategyValidator.analyzeCode(code);
+  return result;
 }

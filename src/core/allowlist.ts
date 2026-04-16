@@ -1,268 +1,264 @@
 /**
- * 端点规则 - 定义允许访问的 API 端点
+ * Allowlist - 网络端点白名单
+ *
+ * 借鉴 IronClaw 的设计：工具只能访问预授权的 endpoints
+ *
+ * 职责：
+ * 1. 定义允许的网络端点 (支持通配符)
+ * 2. 验证请求 URL 是否在白名单中
+ * 3. 支持基于方法的限制
+ *
+ * 用法示例：
+ *   const allowlist = new Allowlist([
+ *     { pattern: 'https://api.binance.com/api/v3/order', methods: ['POST'] },
+ *     { pattern: 'https://api.binance.com/api/v3/account', methods: ['GET'] },
+ *     { pattern: 'https://api.binance.com/api/v3/*', methods: ['GET'] }
+ *   ]);
+ *
+ *   if (allowlist.permits('https://api.binance.com/api/v3/order', 'POST')) { ... }
+ */
+
+/**
+ * 端点规则
  */
 export interface EndpointRule {
-  /** 规则名称（用于日志和调试） */
-  name: string;
-  /** URL 模式（支持 wildcard） */
+  /** URL 模式 (支持 * 通配符) */
   pattern: string;
   /** 允许的 HTTP 方法 */
-  methods: ('GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH')[];
-  /** 可选速率限制（每秒请求数） */
-  rateLimitPerSecond?: number;
-  /** 可选：需要哪些密钥作用域 */
-  requiredScopes?: string[];
-  /** 可选：描述 */
+  methods?: string[];  // ['GET', 'POST', etc.] 空数组表示所有方法
+  /** 可选 rate limit (requests per minute) */
+  rateLimit?: number;
+  /** 描述 */
   description?: string;
 }
 
 /**
- * 匹配结果
+ * 端点匹配结果
  */
-interface MatchResult {
+export interface MatchResult {
   allowed: boolean;
   rule?: EndpointRule;
-  reason?: string;
+  matchedPattern?: string;
 }
 
 /**
- * Allowlist - 端点访问控制
+ * Allowlist 类
  *
- * 设计目标:
- * 1. 每个 skill 只能访问声明的端点
- * 2. 支持通配符和正则匹配
- * 3. 速率限制（可选）
- * 4. 审计日志
- *
- * 参考 IronClaw 网络端点白名单设计
+ * 安全考虑：
+ * - URL 规范化：确保比较的是规范化 URL (query 顺序、编码等)
+ * - 通配符匹配：从左到右，避免正则回溯攻击
  */
 export class Allowlist {
-  private rules: EndpointRule[] = [];
-  private requestCounts: Map<string, number[]> = new Map(); // 用于速率限制
-  private auditLogger: (msg: string) => void;
+  private rules: EndpointRule[];
+  private compiledRules: Array<{ regex: RegExp; rule: EndpointRule }>;
 
-  constructor(auditLogger?: (msg: string) => void) {
-    this.auditLogger = auditLogger || console.log;
-  }
-
-  /**
-   * 加载规则
-   */
-  loadRules(rules: EndpointRule[]): void {
+  constructor(rules: EndpointRule[] = []) {
     this.rules = rules;
-    this.auditLogger(`[Allowlist] Loaded ${rules.length} rules`);
+    this.compiledRules = this.compileRules(rules);
   }
 
   /**
-   * 添加单个规则
+   * 编译正则表达式 (缓存)
    */
-  addRule(rule: EndpointRule): void {
-    this.rules.push(rule);
-    this.auditLogger(`[Allowlist] Added rule: ${rule.name} (${rule.pattern})`);
-  }
-
-  /**
-   * 移除规则
-   */
-  removeRule(patternOrName: string): void {
-    const before = this.rules.length;
-    this.rules = this.rules.filter(r => r.name !== patternOrName && r.pattern !== patternOrName);
-    this.auditLogger(`[Allowlist] Removed rule: ${patternOrName} (${before - this.rules.length} removed)`);
-  }
-
-  /**
-   * 检查请求是否允许
-   */
-  permits(url: string, method: string, context?: { skillName?: string }): MatchResult {
-    // 查找匹配的规则
-    const matchedRule = this.rules.find(rule => {
-      const methodMatch = rule.methods.includes(method as any);
-      if (!methodMatch) return false;
-      return this.matchPattern(url, rule.pattern);
-    });
-
-    if (!matchedRule) {
-      const reason = `No allowlist rule matched: ${method} ${url}`;
-      this.auditLogger(`[Allowlist] DENIED: ${reason}${context ? ` (skill: ${context.skillName})` : ''}`);
-      return { allowed: false, reason };
-    }
-
-    // 检查速率限制
-    if (matchedRule.rateLimitPerSecond) {
-      const now = Date.now();
-      const windowStart = now - 1000; // 1 秒窗口
-      const key = `${matchedRule.pattern}:${method}`;
-      
-      // 清理旧记录
-      const counts = this.requestCounts.get(key) || [];
-      const recent = counts.filter(t => t > windowStart);
-      
-      if (recent.length >= matchedRule.rateLimitPerSecond!) {
-        const reason = `Rate limit exceeded: ${recent.length}/${matchedRule.rateLimitPerSecond} per second`;
-        this.auditLogger(`[Allowlist] RATE LIMITED: ${reason}`);
-        return { allowed: false, rule: matchedRule, reason };
-      }
-      
-      recent.push(now);
-      this.requestCounts.set(key, recent);
-    }
-
-    this.auditLogger(`[Allowlist] ALLOWED: ${method} ${url} (rule: ${matchedRule.name})`);
-    return { allowed: true, rule: matchedRule };
-  }
-
-  /**
-   * URL 模式匹配（支持 * 和 ? wildcard）
-   */
-  private matchPattern(url: string, pattern: string): boolean {
-    // 转换为正则表达式
-    const regexPattern = '^' + pattern
-      .replace(/[.+^${}()|[\]\\]/g, '\\$&') // 转义特殊字符
-      .replace(/\*/g, '.*')  // * 匹配任意字符序列
-      .replace(/\?/g, '.')   // ? 匹配单个字符
-      + '$';
-    
-    try {
-      const regex = new RegExp(regexPattern);
-      return regex.test(url);
-    } catch (e) {
-      console.error(`[Allowlist] Invalid pattern: ${pattern}`, e);
-      return false;
-    }
-  }
-
-  /**
-   * 获取所有规则
-   */
-  getRules(): EndpointRule[] {
-    return [...this.rules];
-  }
-
-  /**
-   * 验证规则配置（检查是否有冲突）
-   */
-  validate(): { valid: boolean; errors: string[] } {
-    const errors: string[] = [];
-
-    for (const rule of this.rules) {
-      if (!rule.name) {
-        errors.push('Rule missing name');
-      }
-      if (!rule.pattern) {
-        errors.push(`Rule ${rule.name || 'unnamed'}: missing pattern`);
-      }
-      if (!rule.methods || rule.methods.length === 0) {
-        errors.push(`Rule ${rule.name}: missing methods`);
-      }
-      // 检查重复模式
-      const duplicates = this.rules.filter(r => r.pattern === rule.pattern && r !== rule);
-      if (duplicates.length > 0) {
-        errors.push(`Rule ${rule.name}: duplicate pattern with ${duplicates.map(d => d.name).join(', ')}`);
-      }
-    }
-
-    return { valid: errors.length === 0, errors };
-  }
-
-  /**
-   * 导出配置
-   */
-  export(): EndpointRule[] {
-    return this.rules.map(({ name, pattern, methods, rateLimitPerSecond, requiredScopes, description }) => ({
-      name,
-      pattern,
-      methods,
-      rateLimitPerSecond,
-      requiredScopes,
-      description,
+  private compileRules(rules: EndpointRule[]): Array<{ regex: RegExp; rule: EndpointRule }> {
+    return rules.map(rule => ({
+      regex: this.patternToRegex(rule.pattern),
+      rule
     }));
   }
 
   /**
-   * 清空所有规则
+   * 将通配符模式转换为 RegExp
+   *
+   * 支持：
+   * - * 匹配任意字符 (除 / 外的字符)
+   * - ** 匹配任意路径 (包括 /)
+   * - ? 匹配单个字符
+   *
+   * 示例：
+   *   'https://api.example.com/users/*'  ->  https://api\.example\.com/users/[^/?]+
+   *   'https://api.example.com/**'      ->  https://api\.example\.com/.*
    */
-  clear(): void {
-    this.rules = [];
-    this.requestCounts.clear();
-    this.auditLogger('[Allowlist] All rules cleared');
+  private patternToRegex(pattern: string): RegExp {
+    // 转义正则特殊字符
+    let regex = pattern
+      .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*/g, '[^/?]+')     // * 匹配除 / 外的字符
+      .replace(/\*\*/g, '.*')       // ** 匹配所有
+      .replace(/\?/g, '.');         // ? 匹配单字符
+
+    return new RegExp(`^${regex}$`);
   }
-}
 
-/**
- * 全局 Allowlist 实例
- */
-let globalAllowlist: Allowlist | null = null;
-
-/**
- * 初始化 Allowlist
- */
-export function initAllowlist(rules?: EndpointRule[], auditLogger?: (msg: string) => void): Allowlist {
-  if (!globalAllowlist) {
-    globalAllowlist = new Allowlist(auditLogger);
-    if (rules) {
-      globalAllowlist.loadRules(rules);
+  /**
+   * 规范化 URL
+   *
+   * - 移除 fragment
+   * - 规范化 query 参数排序
+   * - 解码 percent-encoding
+   */
+  private normalizeUrl(url: string): string {
+    try {
+      const urlObj = new URL(url);
+      // 移除 hash
+      urlObj.hash = '';
+      // 排序 query parameters (可选，对于某些 API 顺序不重要)
+      // const params = new URLSearchParams(urlObj.search);
+      // const sorted = Array.from(params.entries()).sort();
+      // urlObj.search = new URLSearchParams(sorted).toString();
+      return urlObj.toString();
+    } catch {
+      // 如果 URL 解析失败，返回原样
+      return url;
     }
-    const validation = globalAllowlist.validate();
-    if (!validation.valid) {
-      console.error('[Allowlist] Validation failed:', validation.errors);
-      throw new Error('Allowlist validation failed');
+  }
+
+  /**
+   * 检查 URL + 方法是否在白名单中
+   */
+  permits(url: string, method?: string): boolean {
+    const normalized = this.normalizeUrl(url);
+    const upperMethod = method ? method.toUpperCase() : undefined;
+
+    for (const { regex, rule } of this.compiledRules) {
+      if (regex.test(normalized)) {
+        // 方法检查
+        if (upperMethod && rule.methods && rule.methods.length > 0) {
+          if (!rule.methods.includes(upperMethod)) {
+            return false; // URL 匹配但方法不匹配
+          }
+        }
+        return true;
+      }
     }
+
+    return false;
   }
-  return globalAllowlist;
+
+  /**
+   * 获取匹配的规则详情
+   */
+  match(url: string, method?: string): MatchResult | null {
+    const normalized = this.normalizeUrl(url);
+    const upperMethod = method ? method.toUpperCase() : undefined;
+
+    for (const { regex, rule } of this.compiledRules) {
+      if (regex.test(normalized)) {
+        if (upperMethod && rule.methods && rule.methods.length > 0) {
+          if (!rule.methods.includes(upperMethod)) {
+            return { allowed: false, rule, matchedPattern: rule.pattern };
+          }
+        }
+        return { allowed: true, rule, matchedPattern: rule.pattern };
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * 添加规则 (动态更新)
+   */
+  addRule(rule: EndpointRule): void {
+    this.rules.push(rule);
+    this.compiledRules.push({ regex: this.patternToRegex(rule.pattern), rule });
+  }
+
+  /**
+   * 删除规则 (根据 pattern)
+   */
+  removeRule(pattern: string): boolean {
+    const idx = this.rules.findIndex(r => r.pattern === pattern);
+    if (idx === -1) return false;
+    
+    this.rules.splice(idx, 1);
+    this.compiledRules.splice(idx, 1);
+    return true;
+  }
+
+  /**
+   * 列出所有规则
+   */
+  listRules(): EndpointRule[] {
+    return [...this.rules];
+  }
+
+  /**
+   * 验证规则配置 (防止明显错误)
+   */
+  static validate(rules: EndpointRule[]): { valid: boolean; errors: string[] } {
+    const errors: string[] = [];
+
+    for (const rule of rules) {
+      if (!rule.pattern) {
+        errors.push('Rule must have a pattern');
+        continue;
+      }
+      
+      // 检查是否是有效的 URL 模式
+      try {
+        // 简单检查：模式应以 http:// 或 https:// 开头
+        if (!rule.pattern.startsWith('http://') && !rule.pattern.startsWith('https://')) {
+          errors.push(`Pattern "${rule.pattern}" must start with http:// or https://`);
+        }
+      } catch {
+        errors.push(`Invalid pattern: ${rule.pattern}`);
+      }
+
+      if (rule.methods) {
+        for (const method of rule.methods) {
+          if (!['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'].includes(method.toUpperCase())) {
+            errors.push(`Invalid HTTP method: ${method}`);
+          }
+        }
+      }
+
+      if (rule.rateLimit && (rule.rateLimit < 1 || rule.rateLimit > 10000)) {
+        errors.push(`Rate limit ${rule.rateLimit} out of reasonable range (1-10000)`);
+      }
+    }
+
+    return {
+      valid: errors.length === 0,
+      errors
+    };
+  }
 }
 
 /**
- * 获取全局 Allowlist 实例
+ * 默认交易所 endpoints (示例)
  */
-export function getAllowlist(): Allowlist {
-  if (!globalAllowlist) {
-    throw new Error('Allowlist not initialized. Call initAllowlist() first.');
+export const DEFAULT_EXCHANGE_RULES: EndpointRule[] = [
+  {
+    pattern: 'https://api.binance.com/api/v3/order',
+    methods: ['POST', 'DELETE'],
+    description: '下单/撤单'
+  },
+  {
+    pattern: 'https://api.binance.com/api/v3/account',
+    methods: ['GET'],
+    description: '账户信息'
+  },
+  {
+    pattern: 'https://api.binance.com/api/v3/openOrders',
+    methods: ['GET'],
+    description: '当前挂单'
+  },
+  {
+    pattern: 'https://api.binance.com/api/v3/ticker/price',
+    methods: ['GET'],
+    description: '价格查询'
+  },
+  {
+    pattern: 'https://api.binance.com/api/v3/exchangeInfo',
+    methods: ['GET'],
+    description: '交易所信息'
   }
-  return globalAllowlist;
-}
+];
 
 /**
- * 辅助函数：为交易所 Adapter 创建默认规则
+ * 便捷函数：创建 Allowlist
  */
-export function createExchangeAllowlist(
-  baseUrl: string,
-  methods: ('GET' | 'POST' | 'PUT' | 'DELETE')[] = ['GET', 'POST']
-): EndpointRule[] {
-  return [
-    {
-      name: 'Exchange Account Info',
-      pattern: `${baseUrl}/api/v3/account`,
-      methods: ['GET'],
-      description: 'Get account balance',
-    },
-    {
-      name: 'Exchange Order',
-      pattern: `${baseUrl}/api/v3/order`,
-      methods: ['POST'],
-      description: 'Create order',
-    },
-    {
-      name: 'Exchange Order Cancel',
-      pattern: `${baseUrl}/api/v3/order/*`,
-      methods: ['DELETE'],
-      description: 'Cancel order',
-    },
-    {
-      name: 'Exchange Ticker',
-      pattern: `${baseUrl}/api/v3/ticker/*`,
-      methods: ['GET'],
-      description: 'Get ticker price',
-    },
-    {
-      name: 'Exchange Kline/Candlestick',
-      pattern: `${baseUrl}/api/v3/klines`,
-      methods: ['GET'],
-      description: 'Get kline data',
-    },
-  ];
+export function createAllowlist(rules?: EndpointRule[]): Allowlist {
+  return new Allowlist(rules || DEFAULT_EXCHANGE_RULES);
 }
-
-// Test helper: clear global singleton
-(getAllowlist as any).__clear = function() {
-  globalAllowlist = null;
-};
